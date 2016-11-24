@@ -5,14 +5,18 @@ package regression
   */
 
 import Helper.{Array2VectorUDF, Vector2DoubleUDF}
-import Helper.VectorManipulation._
-import org.apache.spark.ml.feature._
-import org.apache.spark.ml.linalg.{Vector, Vectors}
+import Helper.VectorMatrixManipulation._
+import org.apache.spark.ml.feature.{RegexTokenizer, StandardScaler, StandardScalerModel, VectorSlicer}
+import org.apache.spark.ml.linalg.{DenseMatrix, Vector}
 import org.apache.spark.ml.{Pipeline, PipelineModel}
 import org.apache.spark.ml.regression.{LinearRegression, LinearRegressionModel}
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.functions.col
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 
+
+case class Instance(label: Double, features: Vector)
 
 object MyLinearRegression {
 
@@ -62,35 +66,60 @@ object MyLinearRegression {
     // 2. Array[String] to Vector[Double]
     val arr2Vec = new Array2VectorUDF(_.toDouble).setInputCol("valueArr").setOutputCol("valueVec")
 
-    // 2. slice year (label) out, as Vector[Double]
-    val yearVecSlicer = new VectorSlicer().setInputCol("valueVec").setOutputCol("yearVec").setIndices(Array(0))
+    // 3. center the data, important!!!
+    val stdScaler = new StandardScaler().setInputCol("valueVec").setOutputCol("valueVecCentered").setWithMean(true).setWithStd(false)
 
-    // 3. transform year to Double and subtract with minimum year, 1922
-    val yearVec2Double = new Vector2DoubleUDF(_(0) - 1922.0).setInputCol("yearVec").setOutputCol("label")
+    // 4. slice year (label) out, as Vector[Double]
+    val yearVecSlicer = new VectorSlicer().setInputCol("valueVecCentered").setOutputCol("yearVec").setIndices(Array(0))
 
-    // 4. slice year features out, as Vector[Double]
-    val featuresVecSlicer = new VectorSlicer().setInputCol("valueVec").setOutputCol("featuresVec").setIndices((1 to 90).toArray)
+    // 5. transform year to Double
+    val yearVec2Double = new Vector2DoubleUDF(_(0)).setInputCol("yearVec").setOutputCol("label")
 
-    // 5. min-max transform features
-    val minMaxScaler = new MinMaxScaler().setInputCol("featuresVec").setOutputCol("featuresVecScaled")
+    // 6. slice year features out, as Vector[Double]
+    val featuresVecSlicer = new VectorSlicer().setInputCol("valueVecCentered").setOutputCol("featuresVec").setIndices((1 to 90).toArray)
 
-    // 6. split features into timbre average and timbre covariance
-    val timbreAvgVecSlicer = new VectorSlicer().setInputCol("featuresVecScaled").setOutputCol("timbreAvgVec").setIndices((0 to 11).toArray)
-    val timbreCovVecSlicer = new VectorSlicer().setInputCol("featuresVecScaled").setOutputCol("timbreCovVec").setIndices((12 to 89).toArray)
+    // 7. split features into timbre average and timbre covariance
+    val timbreAvgVecSlicer = new VectorSlicer().setInputCol("featuresVec").setOutputCol("timbreAvgVec").setIndices((0 to 11).toArray)
+    val timbreCovVecSlicer = new VectorSlicer().setInputCol("featuresVec").setOutputCol("timbreCovVec").setIndices((12 to 89).toArray)
+
+    val linearReg = new LinearRegression().setFeaturesCol("featuresVec").setLabelCol("label").setSolver("normal").setRegParam(0.1)
+
+    val transformStages = Array(splitter, arr2Vec, stdScaler, yearVecSlicer, yearVec2Double,  featuresVecSlicer, timbreAvgVecSlicer, timbreCovVecSlicer, linearReg)
+    val transformPipeline = new Pipeline().setStages(transformStages)
+    val pipelineModel = transformPipeline.fit(trainData)
+
+    val meanValues = pipelineModel.stages(2).asInstanceOf[StandardScalerModel].mean
+    println("meanValues: " + meanValues)
+    val stdValues = pipelineModel.stages(2).asInstanceOf[StandardScalerModel].std
+    println("stdValues: " + stdValues)
+
+//    val trainingSummary = pipelineModel.stages(transformStages.length - 1).asInstanceOf[LinearRegressionModel].summary
+//    println(s"RMSE: ${trainingSummary.rootMeanSquaredError}")
+
+    //    val predictions = pipelineModel.transform(testData)
+    //    predictions.printSchema()
+    //    predictions.show()
 
     // implement my linear regression
+    val transformedData = pipelineModel.transform(trainData)
+
+    val l2Regularization: Double = 0.1
+
+    val instances: RDD[Instance] = transformedData.select(col("label"), col("featuresVec")).rdd.map({
+      case Row(label: Double, features: Vector) => Instance(label, features)
+    })
+
+    val normalEquTerms: (DenseMatrix, Vector) = instances.map((instance: Instance) => instance match {
+      case Instance(aLabel, aFeatures) => (outerVecProduct(aFeatures, aFeatures), vecScale(aFeatures, aLabel))
+    }).reduce((pair1: (DenseMatrix, Vector), pair2: (DenseMatrix, Vector)) => (matrixAdd(pair1._1, pair2._1), vecAdd(pair1._2, pair2._2)))
+
+    val normalEquTerm1 = normalEquTerms._1
+    val regularizedNormalEquTerm1 = matrixAdd(normalEquTerm1, matrixScale(DenseMatrix.ones(normalEquTerm1.numRows, normalEquTerm1.numCols), l2Regularization))
+    val normalEquTerm2 = normalEquTerms._2
 
 
-    /*
-    val linearReg = new LinearRegression().setFeaturesCol("featuresVecScaled").setLabelCol("label")
-
-    val transformStages = Array(splitter, arr2Vec, yearVecSlicer, yearVec2Double,  featuresVecSlicer, minMaxScaler, timbreAvgVecSlicer, timbreCovVecSlicer, linearReg)
-    val transformPipeline = new Pipeline().setStages(transformStages)
-
-    val predictions = transformPipeline.fit(trainData).transform(testData)
-    predictions.printSchema()
-    predictions.show()
-    */
+    println(regularizedNormalEquTerm1)
+    println(normalEquTerm2)
 
 
   }
