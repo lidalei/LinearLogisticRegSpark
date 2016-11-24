@@ -7,7 +7,7 @@ package regression
 import Helper.{Array2VectorUDF, Vector2DoubleUDF}
 import Helper.VectorMatrixManipulation._
 import org.apache.spark.ml.feature.{RegexTokenizer, StandardScaler, StandardScalerModel, VectorSlicer}
-import org.apache.spark.ml.linalg.{DenseMatrix, Vector}
+import org.apache.spark.ml.linalg.{Vector, Vectors}
 import org.apache.spark.ml.{Pipeline, PipelineModel}
 import org.apache.spark.ml.regression.{LinearRegression, LinearRegressionModel}
 import org.apache.spark.rdd.RDD
@@ -17,6 +17,8 @@ import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 
 
 case class Instance(label: Double, features: Vector)
+
+case class InstanceWithPrediction(label: Double, features: Vector, prediction: Double)
 
 object MyLinearRegression {
 
@@ -33,6 +35,39 @@ object MyLinearRegression {
       //      .config("spark.some.config.option", "some-value")
       .getOrCreate()
     sparkSql
+  }
+
+
+  def train(trainInstances: RDD[Instance], l2Regularization: Double): Vector = {
+    val normalEquTerms: (Vector, Vector) = trainInstances.map((instance: Instance) => instance match {
+      case Instance(aLabel, aFeatures) => (outerVecProduct(aFeatures), vecScale(aFeatures, aLabel))
+    }).reduce((pair1: (Vector, Vector), pair2: (Vector, Vector)) => (vecAdd(pair1._1, pair2._1), vecAdd(pair1._2, pair2._2)))
+
+    val normalEquTerm2: Vector = normalEquTerms._2
+    val normalEquTerm1: Vector = normalEquTerms._1
+    //    println(normalEquTerm2)
+    //    println(normalEquTerm1)
+
+    val regularizedNormalEquTerm1 = vecAdd(normalEquTerm1, upperTriangle(normalEquTerm2.size, l2Regularization))
+    //    println(regularizedNormalEquTerm1)
+
+    Vectors.dense(solve(regularizedNormalEquTerm1.toArray, normalEquTerm2.toArray))
+  }
+
+
+  def predict(theta: Vector, instances: RDD[Instance]): RDD[InstanceWithPrediction] = {
+    instances.map({
+      case Instance(label, features) => InstanceWithPrediction(label, features, vecInnerProduct(theta, features))
+    })
+  }
+
+  /**
+    * Compute RMSE
+    */
+  def rmse(predictions: RDD[InstanceWithPrediction]): Double = {
+    math.sqrt(predictions.map({
+      case InstanceWithPrediction(label, features, prediction) => (label - prediction) * (label - prediction)
+    }).sum() / predictions.count())
   }
 
   def main(args: Array[String]): Unit = {
@@ -58,6 +93,7 @@ object MyLinearRegression {
     val trainTestSplitArr: Array[DataFrame] = data.randomSplit(Array(0.9, 0.1))
     val (trainData, testData) = (trainTestSplitArr(0), trainTestSplitArr(1))
 
+    val l2Regularization: Double = 0.1
 
     // begin the pipeline
     // 1. split by ,
@@ -82,44 +118,52 @@ object MyLinearRegression {
     val timbreAvgVecSlicer = new VectorSlicer().setInputCol("featuresVec").setOutputCol("timbreAvgVec").setIndices((0 to 11).toArray)
     val timbreCovVecSlicer = new VectorSlicer().setInputCol("featuresVec").setOutputCol("timbreCovVec").setIndices((12 to 89).toArray)
 
-    val linearReg = new LinearRegression().setFeaturesCol("featuresVec").setLabelCol("label").setSolver("normal").setRegParam(0.1)
+    val linearReg = new LinearRegression().setFeaturesCol("featuresVec").setLabelCol("label").setSolver("normal").setRegParam(l2Regularization)
 
     val transformStages = Array(splitter, arr2Vec, stdScaler, yearVecSlicer, yearVec2Double,  featuresVecSlicer, timbreAvgVecSlicer, timbreCovVecSlicer, linearReg)
     val transformPipeline = new Pipeline().setStages(transformStages)
-    val pipelineModel = transformPipeline.fit(trainData)
+    val pipelineModel:PipelineModel = transformPipeline.fit(trainData)
 
     val meanValues = pipelineModel.stages(2).asInstanceOf[StandardScalerModel].mean
     println("meanValues: " + meanValues)
-    val stdValues = pipelineModel.stages(2).asInstanceOf[StandardScalerModel].std
-    println("stdValues: " + stdValues)
 
-//    val trainingSummary = pipelineModel.stages(transformStages.length - 1).asInstanceOf[LinearRegressionModel].summary
-//    println(s"RMSE: ${trainingSummary.rootMeanSquaredError}")
+    val trainingSummary = pipelineModel.stages(transformStages.length - 1).asInstanceOf[LinearRegressionModel].summary
+    println(s"RMSE: ${trainingSummary.rootMeanSquaredError}")
 
-    //    val predictions = pipelineModel.transform(testData)
-    //    predictions.printSchema()
-    //    predictions.show()
+    val trainingCoefficients = pipelineModel.stages(transformStages.length - 1).asInstanceOf[LinearRegressionModel].coefficients
+    println("Spark ML fit theta: " + trainingCoefficients.toArray.mkString(", "))
+
+    // make predictions in test data
+    val transformedTestData = pipelineModel.transform(testData)
+    val linearRegTestRMSE = rmse(transformedTestData.select(col("label"), col("featuresVec"), col("prediction")).rdd.map({
+      case Row(label: Double, features: Vector, prediction: Double) => InstanceWithPrediction(label, features, prediction)
+    }))
+
+    println("linearRegTestRMSE: " + linearRegTestRMSE)
+    transformedTestData.select("label", "prediction").show()
 
     // implement my linear regression
-    val transformedData = pipelineModel.transform(trainData)
+    val transformedTrainData = pipelineModel.transform(trainData)
 
-    val l2Regularization: Double = 0.1
-
-    val instances: RDD[Instance] = transformedData.select(col("label"), col("featuresVec")).rdd.map({
+    val trainInstances: RDD[Instance] = transformedTrainData.select(col("label"), col("featuresVec")).rdd.map({
       case Row(label: Double, features: Vector) => Instance(label, features)
     })
 
-    val normalEquTerms: (DenseMatrix, Vector) = instances.map((instance: Instance) => instance match {
-      case Instance(aLabel, aFeatures) => (outerVecProduct(aFeatures, aFeatures), vecScale(aFeatures, aLabel))
-    }).reduce((pair1: (DenseMatrix, Vector), pair2: (DenseMatrix, Vector)) => (matrixAdd(pair1._1, pair2._1), vecAdd(pair1._2, pair2._2)))
+    val testInstances: RDD[Instance] = transformedTestData.select(col("label"), col("featuresVec")).rdd.map({
+      case Row(label: Double, features: Vector) => Instance(label, features)
+    })
 
-    val normalEquTerm1 = normalEquTerms._1
-    val regularizedNormalEquTerm1 = matrixAdd(normalEquTerm1, matrixScale(DenseMatrix.ones(normalEquTerm1.numRows, normalEquTerm1.numCols), l2Regularization))
-    val normalEquTerm2 = normalEquTerms._2
+    val myTheta: Vector = train(trainInstances, l2Regularization)
+    println("myTheta: " + myTheta.toArray.mkString(", "))
 
+    // make predictions on test data
+    val predictions: RDD[InstanceWithPrediction] = predict(myTheta, testInstances)
 
-    println(regularizedNormalEquTerm1)
-    println(normalEquTerm2)
+    val myRMSE = rmse(predictions)
+    println("myRMSE: " + myRMSE)
+
+    val predictionsDF = predictions.toDF("label", "features", "prediction")
+    predictionsDF.select("label", "prediction").show()
 
 
   }

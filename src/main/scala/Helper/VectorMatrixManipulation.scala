@@ -29,6 +29,9 @@ object VectorMatrixManipulation {
 
   }
 
+  def upperTriangle(n: Int, diagValue: Double): Vector = {
+    Vectors.dense((0 until n).flatMap((i: Int) => (0 to i).map((j: Int) => if(i == j) diagValue else 0.0)).toArray)
+  }
 
   /**
     * outer product of two vectors

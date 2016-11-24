@@ -37,6 +37,8 @@ class VectorMatrixManipulationTest extends FunSuite {
 
       assert(outerVecProduct(v1) === Vectors.dense(Array(1, 2, 4, 3, 6, 9.0)))
 
+      assert(upperTriangle(4, 1.0) === Vectors.dense(Array(1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)))
+
     }
   }
 
