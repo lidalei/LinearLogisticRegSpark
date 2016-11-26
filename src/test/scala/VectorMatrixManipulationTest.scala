@@ -39,6 +39,8 @@ class VectorMatrixManipulationTest extends FunSuite {
 
       assert(upperTriangle(4, 1.0) === Vectors.dense(Array(1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)))
 
+//      assert(randVec(5) === Vectors.dense(Array(1.0)))
+
     }
   }
 

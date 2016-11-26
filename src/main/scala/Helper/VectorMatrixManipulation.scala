@@ -14,6 +14,15 @@ object VectorMatrixManipulation {
 
 
   /**
+    * Generate a random Vector of a specific size
+    * @param n
+    * @return
+    */
+  def randVec(n: Int): Vector = {
+    Vectors.dense((0 to n - 1).toArray.map(_ => math.random))
+  }
+
+  /**
     * Compute outer product of v with itself
     * return the upper triangle with column as the order of serialization
     * @param v
