@@ -41,6 +41,10 @@ class VectorMatrixManipulationTest extends FunSuite {
 
 //      assert(randVec(5) === Vectors.dense(Array(1.0)))
 
+      println(m1.toString())
+
+      assert(matrixMultiplyVec(Vectors.dense(m1.toArray), v1) === Vectors.dense(Array(30.0, 36.0, 42.0)))
+
     }
   }
 

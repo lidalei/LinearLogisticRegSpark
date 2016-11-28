@@ -5,7 +5,7 @@ import org.apache.spark.ml.feature.VectorAssembler
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types.{DoubleType, StructField, StructType}
-import org.apache.spark.ml.linalg.{Vector, Vectors}
+import org.apache.spark.ml.linalg.{DenseMatrix, Matrices, Vector, Vectors}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.col
 import Helper.VectorMatrixManipulation._
@@ -42,7 +42,7 @@ object MyLogisticRegression {
   }
 
   def computeGradient(data: RDD[Instance], theta: Vector): Vector = {
-    // compute gradient, to implement newton's method
+    // compute gradient, to implement newton's method and mini-batch
     data.map({
       case Instance(label, features) => vecScale(features, sigmoid(vecInnerProduct(theta, features)) - label)
     }).reduce(vecAdd)
@@ -69,7 +69,7 @@ object MyLogisticRegression {
     * @return fit coefficients
     */
 
-  def train(trainData: RDD[Instance], maxIterations: Int, learningRate: Double): (Vector, Array[Double]) = {
+  def trainGradientDescent(trainData: RDD[Instance], maxIterations: Int, learningRate: Double): (Vector, Array[Double]) = {
 
     val numberOfFeatures: Int = trainData.first() match {
       case Instance(_, features) => features.size
@@ -78,14 +78,71 @@ object MyLogisticRegression {
     // set initial coefficients, with all one column
     var theta: Vector = Vectors.zeros(numberOfFeatures)
     val lost = Array.fill[Double](maxIterations)(0.0)
+    var decayedLearningRate = learningRate
 
     for {
       i <- 0 until maxIterations
     }
       {
-        val decayedLearningRate = learningRate// / math.pow(2.0, i)
+        if(i >= 2 && lost(i - 1) > lost(i - 2)) {
+          decayedLearningRate = learningRate / 2.0
+        }
         // minus
         val deltaTheta = vecScale(computeGradient(trainData, theta), -decayedLearningRate)
+        theta = vecAdd(theta, deltaTheta)
+
+        lost(i) = crossEntropy(trainData, theta)
+      }
+
+    (theta, lost)
+  }
+
+  def computeHessianMatrix(data: RDD[Instance], theta: Vector): Vector = {
+    data.map({
+      case Instance(label: Double, features: Vector) => {
+        val sigma = sigmoid(vecInnerProduct(theta, features))
+        vecScale(outerVecProduct(features), sigma * (1 - sigma))
+      }
+    }).reduce(vecAdd)
+  }
+
+  /**
+    * train with Newton's method
+    * @param trainData
+    * @param maxIterations
+    * @param learningRate
+    * @return
+    */
+  def trainNewtonMethod(trainData: RDD[Instance], maxIterations: Int, learningRate: Double): (Vector, Array[Double]) = {
+    val numberOfFeatures: Int = trainData.first() match {
+      case Instance(_, features) => features.size
+    }
+
+    // set initial coefficients, with all one column
+    var theta: Vector = Vectors.zeros(numberOfFeatures)
+    val lost = Array.fill[Double](maxIterations)(0.0)
+    var decayedLearningRate = learningRate
+
+    for {
+      i <- 0 until maxIterations
+    }
+      {
+        if(i >= 2 && lost(i - 1) > lost(i - 2)) {
+          decayedLearningRate = learningRate / 2.0
+        }
+        val gradient = computeGradient(trainData, theta)
+        // compute Hessian matrix
+        val hessianMatrixVec = computeHessianMatrix(trainData, theta)
+
+        val eyeMatrixArr: Array[Double] = DenseMatrix.eye(numberOfFeatures).toArray
+
+        // size = numberOfFeatures * numberOfFeatures
+        val invHessianMatrixArr: Array[Double] = solveLinearEquations(hessianMatrixVec.toArray, eyeMatrixArr, numberOfFeatures, numberOfFeatures)
+
+        val deltaNewton = Matrices.dense(numberOfFeatures, numberOfFeatures, invHessianMatrixArr).multiply(gradient)
+
+        val deltaTheta = vecScale(deltaNewton, -decayedLearningRate)
+
         theta = vecAdd(theta, deltaTheta)
 
         lost(i) = crossEntropy(trainData, theta)
@@ -173,7 +230,9 @@ object MyLogisticRegression {
       case Row(label: Double, features: Vector) => Instance(label, Vectors.dense(features.toArray ++ Array(1.0)))
     })
 
-    val (theta, lost): (Vector, Array[Double]) = train(trainDataRDD, 10, 0.01)
+//    val (theta, lost): (Vector, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.01)
+
+    val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.01)
 
     println("theta: " + theta.toArray.mkString(","))
     println("lost: " + lost.mkString(","))

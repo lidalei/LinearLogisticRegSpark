@@ -5,9 +5,10 @@ package Helper
   */
 
 import com.github.fommil.netlib.LAPACK.{getInstance => lapack}
+import org.apache.spark.ml.linalg.Matrices
 import org.netlib.util.intW
 //import org.apache.spark.SparkContext
-import org.apache.spark.ml.linalg.{DenseMatrix, Matrices, Matrix, Vector, Vectors}
+import org.apache.spark.ml.linalg.{DenseMatrix, Matrix, Vector, Vectors}
 //import org.apache.spark.rdd.RDD
 
 object VectorMatrixManipulation {
@@ -38,9 +39,16 @@ object VectorMatrixManipulation {
 
   }
 
+  /**
+    * generate the vector form of an upper triangle identity matrix
+    * @param n
+    * @param diagValue
+    * @return
+    */
   def upperTriangle(n: Int, diagValue: Double): Vector = {
     Vectors.dense((0 until n).flatMap((i: Int) => (0 to i).map((j: Int) => if(i == j) diagValue else 0.0)).toArray)
   }
+
 
   /**
     * outer product of two vectors
@@ -113,6 +121,17 @@ object VectorMatrixManipulation {
 //
 //  }
 
+  /**
+    *
+    * @param A, column order matrix
+    * @param v
+    * @return
+    */
+  def matrixMultiplyVec(A: Vector, v: Vector): Vector = {
+    val dimension = v.size
+    Matrices.dense(dimension, dimension, A.toArray).multiply(v)
+  }
+
 
   /**
     * Compute Cholesky decomposition.
@@ -123,7 +142,7 @@ object VectorMatrixManipulation {
     * Solves a symmetric positive definite linear system via Cholesky factorization.
     * The input arguments are modified in-place to store the factorization and the solution.
     * @param A the upper triangular part of A
-    * @param bx right-hand side
+    * @param bx right-hand side, with only one column, see dppsv third parameter
     * @return the solution array
     */
   def solve(A: Array[Double], bx: Array[Double]): Array[Double] = {
@@ -134,6 +153,17 @@ object VectorMatrixManipulation {
     assert(code == 0, s"lapack.dppsv returned $code.")
     bx
   }
+
+
+  // A * x = B
+  def solveLinearEquations(AP: Array[Double], B: Array[Double], N: Int, NRHS: Int): Array[Double] = {
+    val info = new intW(0)
+    lapack.dppsv("U", N, NRHS, AP, B, N, info)
+    val code = info.`val`
+    assert(code == 0, s"lapack.dppsv returned $code.")
+    B
+  }
+
 
   /**
     * Computes the inverse of a real symmetric positive definite matrix A
