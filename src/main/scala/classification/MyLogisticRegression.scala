@@ -158,7 +158,9 @@ object MyLogisticRegression {
     * @return rdd with predicted
     */
   def predict(theta: Vector, testData: RDD[Instance]): RDD[InstanceWithPrediction] = {
-    ???
+    testData.map({
+      case Instance(label, features) => InstanceWithPrediction(label, features, sigmoid(vecInnerProduct(theta, features)))
+    })
   }
 
 
@@ -237,6 +239,8 @@ object MyLogisticRegression {
     println("theta: " + theta.toArray.mkString(","))
     println("lost: " + lost.mkString(","))
 
+    val predictionProbs = predict(theta, testDataRDD).toDF("label", "features", "prediction")
+    predictionProbs.select("label", "prediction").show()
 
 
   }
