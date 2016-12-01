@@ -10,6 +10,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.col
 import Helper.VectorMatrixManipulation._
 import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressionModel}
+import org.apache.spark.util.LongAccumulator
 
 /**
   * Created by Sophie on 11/23/16.
@@ -17,7 +18,24 @@ import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressio
 
 
 case class Instance(label: Double, features: Vector)
-case class InstanceWithPrediction(label: Double, features: Vector, prediction: Double)
+
+/**
+  * The case class to hold Instance and its predictionProb to be class 1
+  * @param label: true class
+  * @param features: features used to predict
+  * @param predictionProb: probability to be class 1
+  */
+case class InstanceWithPredictionProb(label: Double, features: Vector, predictionProb: Double)
+case class InstanceWithPrediction(label: Double, features: Vector, predictionLabel: Double)
+
+case class ConfusionMatrix(truePositive: LongAccumulator, trueNegative: LongAccumulator, falsePositive: LongAccumulator, falseNegative: LongAccumulator) {
+  override def toString: String = {
+    "truePositive: " + truePositive.value + ", trueNegative: " + trueNegative.value + ", falsePositive: " + falsePositive.value + ", falseNegative: " + falseNegative.value
+  }
+
+}
+//case class ClassificationMetrics(accuracy: Double, precision: Double, recall: Double)
+
 
 
 object MyLogisticRegression {
@@ -49,6 +67,8 @@ object MyLogisticRegression {
   }
 
   def crossEntropy(data: RDD[Instance], theta: Vector): Double = {
+
+    // if not use sigmoid, to be cautious with zero
     data.map({
       case Instance(label, features) => {
         val p = sigmoid(vecInnerProduct(theta, features))
@@ -59,7 +79,7 @@ object MyLogisticRegression {
           -math.log(1.0 - p)
         }
       }
-    }).sum()
+    }).mean()
   }
 
   /**
@@ -157,12 +177,57 @@ object MyLogisticRegression {
     * @param testData
     * @return rdd with predicted
     */
-  def predict(theta: Vector, testData: RDD[Instance]): RDD[InstanceWithPrediction] = {
+  def predictProb(theta: Vector, testData: RDD[Instance]): RDD[InstanceWithPredictionProb] = {
     testData.map({
-      case Instance(label, features) => InstanceWithPrediction(label, features, sigmoid(vecInnerProduct(theta, features)))
+      case Instance(label, features) => InstanceWithPredictionProb(label, features, sigmoid(vecInnerProduct(theta, features)))
     })
   }
 
+
+  /**
+    * Make predictions and compute classification metrics
+    * @param testData
+    * @param threshold
+    * @return
+    */
+  def predict(testData: RDD[InstanceWithPredictionProb], threshold: Double = 0.5): (RDD[InstanceWithPrediction], ConfusionMatrix) = {
+    require(threshold > 0 && threshold < 1)
+
+    val sc: SparkContext = SparkContext.getOrCreate()
+
+    // accumulators to store confusion matrix
+    val truePositiveAcc: LongAccumulator = sc.longAccumulator("truePositive")
+    val falsePositiveAcc: LongAccumulator = sc.longAccumulator("falsePositive")
+    val trueNegativeAcc: LongAccumulator = sc.longAccumulator("trueNegative")
+    val falseNegativeAcc: LongAccumulator = sc.longAccumulator("falseNegative")
+
+    // make predictions
+    val predictions: RDD[InstanceWithPrediction] = testData.map({
+      case InstanceWithPredictionProb(label, features, predictionProb) => {
+        val prediction: Double = if(predictionProb >= threshold) 1.0 else 0.0
+
+        if(prediction == 1.0 && label == 1.0) {
+          truePositiveAcc.add(1)
+        }
+        else if(prediction == 1.0 && label == 0.0) {
+          falsePositiveAcc.add(1)
+        }
+        else if(prediction == 0.0 && label == 1.0) {
+          falseNegativeAcc.add(1)
+        }
+        else {
+          trueNegativeAcc.add(1)
+        }
+
+        InstanceWithPrediction(label, features, prediction)
+      }
+    })
+
+    // only driver program can get the value
+    // println("truePositive value" + truePositiveAcc.value) will print 0
+    (predictions, ConfusionMatrix(truePositiveAcc, trueNegativeAcc, falsePositiveAcc, falseNegativeAcc))
+
+  }
 
   def main(args: Array[String]): Unit = {
 
@@ -176,7 +241,7 @@ object MyLogisticRegression {
     val filePath = "src/main/resources/HIGGS_sample.csv"
 
 //    val dataRDD = sc.textFile(filePath)
-//    dataRDD.take(200).foreach(println)
+//    dataRDD.take(1000).foreach(println)
 
     val featuresCols: Array[String] = (1 to 28).toArray.map("col" + _)
     val cols: Array[String] = Array("label") ++ featuresCols
@@ -201,17 +266,20 @@ object MyLogisticRegression {
     val allFeaturesVecAssembler = new VectorAssembler().setInputCols(featuresCols).setOutputCol("allFeaturesVec")
 
     // 4. logistic regression within Spark ml
-    val featuresVecName: String = "lowLevelFeaturesVec"
+    val featuresVecName: String = "highLevelFeaturesVec"
     val logisticRegression = new LogisticRegression("label").setFeaturesCol(featuresVecName).setMaxIter(10).setFitIntercept(true)
 
-    val transformStages = Array(lowLevelFeaturesVecAssembler, logisticRegression)
+    val transformStages = Array(highLevelFeaturesVecAssembler, logisticRegression)
 
     val pipeline = new Pipeline().setStages(transformStages)
 
     val pipelineModel = pipeline.fit(trainDataDF)
 
-    val mlTheta: Vector = pipelineModel.stages(transformStages.length - 1).asInstanceOf[LogisticRegressionModel].coefficients
-    println(mlTheta.toArray.mkString(","))
+    val mlLogisticRegModel = pipelineModel.stages(transformStages.length - 1).asInstanceOf[LogisticRegressionModel]
+    val mlTheta: Vector = mlLogisticRegModel.coefficients
+
+    println("ML Theta: " + mlTheta.toArray.mkString(", "))
+    println("ML Objective history: " + mlLogisticRegModel.summary.objectiveHistory.mkString(", "))
 
     val trTrainDataDF = pipelineModel.transform(trainDataDF)
 
@@ -223,30 +291,40 @@ object MyLogisticRegression {
 //    trTrainDataDF.describe(cols: _*).show()
 //    trTrainDataDF.show()
 
-
+    // persist trainDataRDD
     val trainDataRDD: RDD[Instance] = trTrainDataDF.select(col("label"), col(featuresVecName)).rdd.map({
       case Row(label: Double, features: Vector) => Instance(label, Vectors.dense(features.toArray ++ Array(1.0)))
-    })
+    }).persist()
+
 
     val testDataRDD: RDD[Instance] = trTestDataDF.select(col("label"), col(featuresVecName)).rdd.map({
       case Row(label: Double, features: Vector) => Instance(label, Vectors.dense(features.toArray ++ Array(1.0)))
     })
 
-//    val (theta, lost): (Vector, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.01)
+//    val (theta, lost): (Vector, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.1)
 
-    val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.01)
+    val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.1)
+    // unpersist trainDataRDD
+    trainDataRDD.unpersist()
 
-    println("theta: " + theta.toArray.mkString(","))
-    println("lost: " + lost.mkString(","))
+    println("theta: " + theta.toArray.mkString(", "))
+    println("lost: " + lost.mkString(", "))
 
-    val predictionProbs = predict(theta, testDataRDD).toDF("label", "features", "prediction")
-    predictionProbs.select("label", "prediction").show()
+    // .toDF("label", "features", "predictionProb")
+    val predictionProbs: RDD[InstanceWithPredictionProb] = predictProb(theta, testDataRDD)
 
+    predictionProbs.toDF().select("label", "predictionProb").show()
+
+    // lazy prediction, be cautious
+    val (predictions, confusionMatrix) = predict(predictionProbs, 0.5)
+
+    // force to predict all
+    predictions.count()
+
+    predictions.toDF("label", "features", "predictionLabel").select("label", "predictionLabel").show()
+
+    println(confusionMatrix.toString)
 
   }
-
-
-
-
 
 }
