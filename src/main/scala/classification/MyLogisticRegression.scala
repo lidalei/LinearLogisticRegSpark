@@ -3,7 +3,7 @@ package classification
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.feature.VectorAssembler
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.types.{DoubleType, StructField, StructType}
 import org.apache.spark.ml.linalg.{DenseMatrix, Matrices, Vector, Vectors}
 import org.apache.spark.rdd.RDD
@@ -11,49 +11,15 @@ import org.apache.spark.sql.functions.col
 import Helper.VectorMatrixManipulation._
 import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressionModel}
 import org.apache.spark.util.LongAccumulator
+import Helper.InstanceUtilities.{ConfusionMatrix, Instance, InstanceWithPrediction, InstanceWithPredictionProb, initializeSC, initializeSparkSession}
+import hyperparameter.tuning.MyCrossValidation.kFold
 
 /**
   * Created by Sophie on 11/23/16.
   */
 
 
-case class Instance(label: Double, features: Vector)
-
-/**
-  * The case class to hold Instance and its predictionProb to be class 1
-  * @param label: true class
-  * @param features: features used to predict
-  * @param predictionProb: probability to be class 1
-  */
-case class InstanceWithPredictionProb(label: Double, features: Vector, predictionProb: Double)
-case class InstanceWithPrediction(label: Double, features: Vector, predictionLabel: Double)
-
-case class ConfusionMatrix(truePositive: LongAccumulator, trueNegative: LongAccumulator, falsePositive: LongAccumulator, falseNegative: LongAccumulator) {
-  override def toString: String = {
-    "truePositive: " + truePositive.value + ", trueNegative: " + trueNegative.value + ", falsePositive: " + falsePositive.value + ", falseNegative: " + falseNegative.value
-  }
-
-}
-//case class ClassificationMetrics(accuracy: Double, precision: Double, recall: Double)
-
-
-
 object MyLogisticRegression {
-
-  def initializeSC(): SparkContext = {
-    val conf = new SparkConf().setAppName("My Logistic Regression").setMaster("local[2]")
-    val sc = new SparkContext(conf)
-    sc
-  }
-
-  def initializeSparkSqlSession(): SparkSession = {
-    val sparkSql = SparkSession
-      .builder().master("local[2]")
-      .appName("My Logistic Regression")
-      //      .config("spark.some.config.option", "some-value")
-      .getOrCreate()
-    sparkSql
-  }
 
   def sigmoid(z: Double): Double  ={
     1.0 / (1.0 + math.exp(-z))
@@ -209,14 +175,14 @@ object MyLogisticRegression {
         if(prediction == 1.0 && label == 1.0) {
           truePositiveAcc.add(1)
         }
-        else if(prediction == 1.0 && label == 0.0) {
-          falsePositiveAcc.add(1)
+        else if(prediction == 0.0 && label == 0.0) {
+          trueNegativeAcc.add(1)
         }
         else if(prediction == 0.0 && label == 1.0) {
           falseNegativeAcc.add(1)
         }
         else {
-          trueNegativeAcc.add(1)
+          falsePositiveAcc.add(1)
         }
 
         InstanceWithPrediction(label, features, prediction)
@@ -229,10 +195,29 @@ object MyLogisticRegression {
 
   }
 
+  /**
+    * Cross validation to do hyperparameter tuning for logistic regression
+    * @param data
+    * @return
+    */
+  def crossValidation(data: RDD[Instance]): Vector = {
+
+    val k: Int = 3
+    val kFolds: Array[(RDD[Instance], RDD[Instance])] = kFold(data, k)
+
+    kFolds.map((trainTest: (RDD[Instance], RDD[Instance])) => trainTest._1)
+
+    // TODO
+  ???
+  }
+
+
   def main(args: Array[String]): Unit = {
 
-    val sc = initializeSC()
-    val sparkSql = initializeSparkSqlSession()
+    val conf = new SparkConf().setAppName("My Logistic Regression").setMaster("local[2]")
+
+    val sc = initializeSC(conf)
+    val sparkSql = initializeSparkSession(conf)
 
     import sparkSql.implicits._
     import sparkSql._
@@ -301,9 +286,15 @@ object MyLogisticRegression {
       case Row(label: Double, features: Vector) => Instance(label, Vectors.dense(features.toArray ++ Array(1.0)))
     })
 
+    val trainingStartTime = System.nanoTime()
+
 //    val (theta, lost): (Vector, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.1)
 
     val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.1)
+
+    val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
+    println("Training duration: " + trainingDuration + " s.")
+
     // unpersist trainDataRDD
     trainDataRDD.unpersist()
 
@@ -321,7 +312,7 @@ object MyLogisticRegression {
     // force to predict all
     predictions.count()
 
-    predictions.toDF("label", "features", "predictionLabel").select("label", "predictionLabel").show()
+    predictions.toDF("label", "features", "prediction").select("label", "prediction").show()
 
     println(confusionMatrix.toString)
 

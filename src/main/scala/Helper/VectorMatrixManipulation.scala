@@ -181,33 +181,4 @@ object VectorMatrixManipulation {
     UAi
   }
 
-  // from package org.apache.spark.ml.optim.WeightedLeastSquares
-  /*
-      val aa = if (fitIntercept) {
-      Array.concat(aaBar.values, aBar.values, Array(1.0))
-    } else {
-      aaBar.values
-    }
-    val ab = if (fitIntercept) {
-      Array.concat(abBar.values, Array(bBar))
-    } else {
-      abBar.values
-    }
-
-    val x = CholeskyDecomposition.solve(aa, ab)
-
-    val aaInv = CholeskyDecomposition.inverse(aa, k)
-
-    // aaInv is a packed upper triangular matrix, here we get all elements on diagonal
-    val diagInvAtWA = new DenseVector((1 to k).map { i =>
-      aaInv(i + (i - 1) * i / 2 - 1) / wSum }.toArray)
-
-    val (coefficients, intercept) = if (fitIntercept) {
-      (new DenseVector(x.slice(0, x.length - 1)), x.last)
-    } else {
-      (new DenseVector(x), 0.0)
-    }
-   */
-
-
 }

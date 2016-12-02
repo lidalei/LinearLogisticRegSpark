@@ -3,7 +3,6 @@ package regression
 /**
   * Created by Sophie on 11/23/16.
   */
-
 import Helper.{Array2VectorUDF, Vector2DoubleUDF}
 import Helper.VectorMatrixManipulation._
 import org.apache.spark.ml.feature.{RegexTokenizer, StandardScaler, StandardScalerModel, VectorSlicer}
@@ -12,31 +11,11 @@ import org.apache.spark.ml.{Pipeline, PipelineModel}
 import org.apache.spark.ml.regression.{LinearRegression, LinearRegressionModel}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.col
-import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
-
-
-case class Instance(label: Double, features: Vector)
-
-case class InstanceWithPrediction(label: Double, features: Vector, prediction: Double)
+import org.apache.spark.sql.{DataFrame, Row}
+import Helper.InstanceUtilities.{Instance, InstanceWithPrediction, initializeSC, initializeSparkSession}
+import org.apache.spark.SparkConf
 
 object MyLinearRegression {
-
-  def initializeSC(): SparkContext = {
-    val conf = new SparkConf().setAppName("My Linear Regression").setMaster("local[2]")
-    val sc = new SparkContext(conf)
-    sc
-  }
-
-  def initializeSparkSqlSession(): SparkSession = {
-    val sparkSql = SparkSession
-      .builder().master("local[2]")
-      .appName("My Linear Regression")
-      //      .config("spark.some.config.option", "some-value")
-      .getOrCreate()
-    sparkSql
-  }
-
 
   def train(trainInstances: RDD[Instance], l2Regularization: Double): Vector = {
     val normalEquTerms: (Vector, Vector) = trainInstances.map((instance: Instance) => instance match {
@@ -72,8 +51,9 @@ object MyLinearRegression {
 
   def main(args: Array[String]): Unit = {
 
-    val sc = initializeSC()
-    val sparkSql = initializeSparkSqlSession()
+    val conf = new SparkConf().setAppName("My Linear Regression").setMaster("local[2]")
+    val sc = initializeSC(conf)
+    val sparkSql = initializeSparkSession(conf)
 
     import sparkSql.implicits._
     import sparkSql._
@@ -90,7 +70,7 @@ object MyLinearRegression {
     val data: DataFrame = sparkSql.read.text(filePath)
 
     // split data into train and test, TODO, to be changed
-    val trainTestSplitArr: Array[DataFrame] = data.randomSplit(Array(0.9, 0.1))
+    val trainTestSplitArr: Array[DataFrame] = data.randomSplit(Array(0.8, 0.2))
     val (trainData, testData) = (trainTestSplitArr(0), trainTestSplitArr(1))
 
     val l2Regularization: Double = 0.1

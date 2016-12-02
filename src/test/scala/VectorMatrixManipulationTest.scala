@@ -1,7 +1,10 @@
 package Helper
 
+import Helper.InstanceUtilities.{ConfusionMatrix, initializeSC, score}
 import org.apache.spark.ml.linalg.{DenseMatrix, Matrices, Matrix, Vector, Vectors}
 import VectorMatrixManipulation._
+import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.util.LongAccumulator
 import org.scalatest.FunSuite
 import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
@@ -17,6 +20,24 @@ class VectorMatrixManipulationTest extends FunSuite {
     val m2: DenseMatrix = new DenseMatrix(3, 3, Array(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0))
 
     val m3: DenseMatrix = new DenseMatrix(3, 3, Array(2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0))
+
+    val sc: SparkContext = initializeSC(conf = new SparkConf().setAppName("Test").setMaster("local"))
+
+    // accumulators to store confusion matrix
+    val truePositiveAcc: LongAccumulator = sc.longAccumulator("truePositive")
+    val falsePositiveAcc: LongAccumulator = sc.longAccumulator("falsePositive")
+    val trueNegativeAcc: LongAccumulator = sc.longAccumulator("trueNegative")
+    val falseNegativeAcc: LongAccumulator = sc.longAccumulator("falseNegative")
+
+    truePositiveAcc.add(100)
+
+    trueNegativeAcc.add(50)
+
+    falsePositiveAcc.add(10)
+
+    falseNegativeAcc.add(5)
+
+    val confusionMatrix: ConfusionMatrix = ConfusionMatrix(truePositiveAcc, trueNegativeAcc, falsePositiveAcc, falseNegativeAcc)
   }
 
   test("test VectorManipulation functions") {
@@ -44,6 +65,13 @@ class VectorMatrixManipulationTest extends FunSuite {
       println(m1.toString())
 
       assert(matrixMultiplyVec(Vectors.dense(m1.toArray), v1) === Vectors.dense(Array(30.0, 36.0, 42.0)))
+
+
+      assert(score(confusionMatrix, "accuracy") === 150.0 / 165)
+
+      assert(score(confusionMatrix, "precision") === 100.0 / 110)
+
+      assert(score(confusionMatrix, "recall") === 100.0 / 105)
 
     }
   }
