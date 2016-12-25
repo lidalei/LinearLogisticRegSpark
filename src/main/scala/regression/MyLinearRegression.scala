@@ -60,7 +60,7 @@ object MyLinearRegression {
 
     // read dataset
 
-    val filePath = "src/main/resources/YearPredictionMSD.txt"
+    val filePath = "/Users/Sophie/Downloads/MPML-Datasets/YearPredictionMSD.txt"
 
     // check the content
 //    val rdd = sc.textFile(filePath)

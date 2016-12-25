@@ -9,6 +9,7 @@ val sparkVersion = "2.0.1"
 libraryDependencies ++= Seq(
   //  groupID % artifactID % revision,
   //  %% will add scala version to artifactID
+  //  TODO, % "provided" to exclude spark from jars
   "org.apache.spark" %% "spark-core" % sparkVersion,
   "org.apache.spark" %% "spark-sql" % sparkVersion,
   "org.apache.spark" %% "spark-mllib" % sparkVersion,
@@ -16,7 +17,9 @@ libraryDependencies ++= Seq(
   "junit" % "junit" % "4.12"
 )
 
-mainClass in assembly := Some("regression.MyLinearRegression")
+assemblyJarName in assembly := "mpml.jar"
+
+mainClass in assembly := Some("classification.MyLogisticRegression")
 
 assemblyOption in assembly := (assemblyOption in assembly).value.copy(includeScala = false)
     

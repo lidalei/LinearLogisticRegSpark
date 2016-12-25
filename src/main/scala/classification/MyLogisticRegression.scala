@@ -25,6 +25,12 @@ object MyLogisticRegression {
     1.0 / (1.0 + math.exp(-z))
   }
 
+  /**
+    * Compute the gradient of total cross entropy in terms of parameters, Vector theta.
+    * @param data
+    * @param theta
+    * @return
+    */
   def computeGradient(data: RDD[Instance], theta: Vector): Vector = {
     // compute gradient, to implement newton's method and mini-batch
     data.map({
@@ -32,6 +38,12 @@ object MyLogisticRegression {
     }).reduce(vecAdd)
   }
 
+  /**
+    * Compute mean cross entropy instead of total cross entropy such that the result is comparable with Spark ML
+    * @param data
+    * @param theta
+    * @return
+    */
   def crossEntropy(data: RDD[Instance], theta: Vector): Double = {
 
     // if not use sigmoid, to be cautious with zero
@@ -73,7 +85,7 @@ object MyLogisticRegression {
         if(i >= 2 && lost(i - 1) > lost(i - 2)) {
           decayedLearningRate = learningRate / 2.0
         }
-        // minus
+        // minus, because of "descent"
         val deltaTheta = vecScale(computeGradient(trainData, theta), -decayedLearningRate)
         theta = vecAdd(theta, deltaTheta)
 
@@ -200,20 +212,31 @@ object MyLogisticRegression {
     * @param data
     * @return
     */
-  def crossValidation(data: RDD[Instance]): Vector = {
+  def crossValidation(data: RDD[Instance], maxIterations: Int, learningRate: Double, threshold: Double = 0.5): Vector = {
 
     val k: Int = 3
     val kFolds: Array[(RDD[Instance], RDD[Instance])] = kFold(data, k)
 
-    kFolds.map((trainTest: (RDD[Instance], RDD[Instance])) => trainTest._1)
+    val thetaWithConfusionMatrixS: Array[(Vector, ConfusionMatrix)] = kFolds.map((trainTest: (RDD[Instance], RDD[Instance])) => {
+      val (trainData, testData) = trainTest
+      val (theta: Vector, lost: Array[Double]) = trainGradientDescent(trainData, maxIterations, learningRate)
 
-    // TODO
+      val predictionsProb: RDD[InstanceWithPredictionProb] = predictProb(theta, testData)
+
+      val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(predictionsProb, threshold)
+
+      (theta, confusionMatrix)
+    })
+
+    // TODO, search over the hyperparameter grid, l2 penalty and polynomial expansion
+
   ???
   }
 
 
   def main(args: Array[String]): Unit = {
 
+    // TODO, change master to spark://b1:7077 or comment setMaster
     val conf = new SparkConf().setAppName("My Logistic Regression").setMaster("local[2]")
 
     val sc = initializeSC(conf)
@@ -222,8 +245,8 @@ object MyLogisticRegression {
     import sparkSql.implicits._
     import sparkSql._
 
-    // check the contents of dataset
-    val filePath = "src/main/resources/HIGGS_sample.csv"
+    // check the contents of dataset. TODO, change the file name to the one in server.
+    val filePath = "/Users/Sophie/Downloads/MPML-Datasets/HIGGS_sample.csv"
 
 //    val dataRDD = sc.textFile(filePath)
 //    dataRDD.take(1000).foreach(println)
@@ -232,7 +255,8 @@ object MyLogisticRegression {
     val cols: Array[String] = Array("label") ++ featuresCols
     val fields: Array[StructField] = cols.map(StructField(_, DoubleType, nullable = true))
     val schema = StructType(fields)
-    val dataDF = sparkSql.read.option("header", false).schema(schema).csv(filePath)
+    // persist data
+    val dataDF = sparkSql.read.option("header", false).schema(schema).csv(filePath).persist()
 
 
     // split data into train and test, TODO
@@ -250,39 +274,37 @@ object MyLogisticRegression {
     // 3. form a vector of all features
     val allFeaturesVecAssembler = new VectorAssembler().setInputCols(featuresCols).setOutputCol("allFeaturesVec")
 
-    // 4. logistic regression within Spark ml
-    val featuresVecName: String = "highLevelFeaturesVec"
-    val logisticRegression = new LogisticRegression("label").setFeaturesCol(featuresVecName).setMaxIter(10).setFitIntercept(true)
+    // 4. logistic regression within Spark ml, TODO, only use low level features now.
+    val featuresVecName: String = "lowLevelFeaturesVec"
+    val trTrainDataDF = lowLevelFeaturesVecAssembler.transform(trainDataDF)
+    val trTestDataDF = lowLevelFeaturesVecAssembler.transform(testDataDF)
 
-    val transformStages = Array(highLevelFeaturesVecAssembler, logisticRegression)
+    val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(10).setFitIntercept(true)
 
-    val pipeline = new Pipeline().setStages(transformStages)
+    val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
 
-    val pipelineModel = pipeline.fit(trainDataDF)
-
-    val mlLogisticRegModel = pipelineModel.stages(transformStages.length - 1).asInstanceOf[LogisticRegressionModel]
     val mlTheta: Vector = mlLogisticRegModel.coefficients
 
     println("ML Theta: " + mlTheta.toArray.mkString(", "))
+    println("ML Intercept: " + mlLogisticRegModel.intercept)
     println("ML Objective history: " + mlLogisticRegModel.summary.objectiveHistory.mkString(", "))
 
-    val trTrainDataDF = pipelineModel.transform(trainDataDF)
-
-    val trTestDataDF = pipelineModel.transform(testDataDF)
-
+    val mlPredictions = mlLogisticRegModel.transform(trTestDataDF)
+    println("ML Predictions: ")
+    mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).show()
 
 //    trTrainDataDF.printSchema()
     // very costy
 //    trTrainDataDF.describe(cols: _*).show()
 //    trTrainDataDF.show()
 
-    // persist trainDataRDD
     val trainDataRDD: RDD[Instance] = trTrainDataDF.select(col("label"), col(featuresVecName)).rdd.map({
+      // append all-one column in the end of features vector
       case Row(label: Double, features: Vector) => Instance(label, Vectors.dense(features.toArray ++ Array(1.0)))
-    }).persist()
-
+    })
 
     val testDataRDD: RDD[Instance] = trTestDataDF.select(col("label"), col(featuresVecName)).rdd.map({
+      // append all-one column in the end of features vector
       case Row(label: Double, features: Vector) => Instance(label, Vectors.dense(features.toArray ++ Array(1.0)))
     })
 
@@ -294,9 +316,6 @@ object MyLogisticRegression {
 
     val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
     println("Training duration: " + trainingDuration + " s.")
-
-    // unpersist trainDataRDD
-    trainDataRDD.unpersist()
 
     println("theta: " + theta.toArray.mkString(", "))
     println("lost: " + lost.mkString(", "))
