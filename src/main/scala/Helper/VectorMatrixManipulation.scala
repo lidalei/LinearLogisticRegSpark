@@ -23,6 +23,11 @@ object VectorMatrixManipulation {
     Vectors.dense((0 to n - 1).toArray.map(_ => math.random))
   }
 
+
+  def vecNormPower(v: Vector, order: Int): Double = {
+    v.toArray.map(e => math.pow(math.abs(e), order)).sum
+  }
+
   /**
     * Compute outer product of v with itself
     * return the upper triangle with column as the order of serialization

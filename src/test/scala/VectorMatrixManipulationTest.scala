@@ -16,6 +16,8 @@ class VectorMatrixManipulationTest extends FunSuite {
     val v1:Vector = Vectors.dense(1.0, 2.0, 3.0)
     val v2:Vector = Vectors.dense(2.0, 3.0, 4.0)
 
+    val v3:Vector = Vectors.dense(2.0, 3.0, -4.0)
+
     val m1: DenseMatrix = new DenseMatrix(3, 3, Array(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0))
     val m2: DenseMatrix = new DenseMatrix(3, 3, Array(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0))
 
@@ -72,6 +74,12 @@ class VectorMatrixManipulationTest extends FunSuite {
       assert(score(confusionMatrix, "precision") === 100.0 / 110)
 
       assert(score(confusionMatrix, "recall") === 100.0 / 105)
+
+      assert(vecNormPower(v1, 2) === 14)
+
+      assert(vecNormPower(v2, 1) === 9)
+
+      assert(vecNormPower(v3, 1) === 9)
 
     }
   }
