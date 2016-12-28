@@ -1,8 +1,10 @@
 package Helper
 
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.ml.linalg.Vector
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.ml.linalg.{Vector, Vectors}
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.util.LongAccumulator
 
 /**
@@ -59,5 +61,22 @@ object InstanceUtilities {
       }
     }
   }
+
+
+  def df2RDD(df: DataFrame, featuresVecName: String, label: String, addAllOneCol: Boolean = false): RDD[Instance] = {
+    if (addAllOneCol) {
+      df.select(col(label), col(featuresVecName)).rdd.map({
+        // append all-one column in the end of features vector
+        case Row(label: Double, features: Vector) => Instance(label, Vectors.dense(features.toArray ++ Array(1.0)))
+      })
+    }
+    else {
+      df.select(col(label), col(featuresVecName)).rdd.map({
+        case Row(label: Double, features: Vector) => Instance(label, features)
+      })
+    }
+
+  }
+
 
 }

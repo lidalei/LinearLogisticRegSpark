@@ -9,7 +9,7 @@ val sparkVersion = "2.0.1"
 libraryDependencies ++= Seq(
   //  groupID % artifactID % revision,
   //  %% will add scala version to artifactID
-  //  TODO, % "provided" to exclude spark from jars
+  //  if necessary, using % "provided" to exclude spark from jars
   "org.apache.spark" %% "spark-core" % sparkVersion,
   "org.apache.spark" %% "spark-sql" % sparkVersion,
   "org.apache.spark" %% "spark-mllib" % sparkVersion,
