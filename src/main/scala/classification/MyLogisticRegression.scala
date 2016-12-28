@@ -44,6 +44,26 @@ object MyLogisticRegression {
   }
 
   /**
+    *
+    * Clip the value into (min, max) to avoid numerical instability
+    * @param value
+    * @param min
+    * @param max
+    * @return
+    */
+  def clip(value: Double, min: Double, max: Double): Double = {
+    if(value > max) {
+      max
+    }
+    else if(value < min) {
+      min
+    }
+    else {
+      value
+    }
+  }
+
+  /**
     * Compute mean cross entropy instead of total cross entropy such that the result is comparable with Spark ML
     * @param data
     * @param theta
@@ -51,10 +71,10 @@ object MyLogisticRegression {
     */
   def crossEntropy(data: RDD[Instance], theta: Vector, intercept: Double): Double = {
 
-    // if not use sigmoid, to be cautious with zero
+    // numerical stability, be cautious with zero and one
     data.map({
       case Instance(label, features) => {
-        val p = sigmoid(vecInnerProduct(theta, features) + intercept)
+        val p = clip(sigmoid(vecInnerProduct(theta, features) + intercept), 1e-7, 1 - 1e-7)
         if(label == 1.0) {
           -math.log(p)
         }
@@ -75,6 +95,8 @@ object MyLogisticRegression {
     * @return fit coefficients, theta plus intercept plus training losts
     */
   def trainGradientDescent(trainData: RDD[Instance], maxIterations: Int, learningRate: Double, lambda: Double): (Vector, Double, Array[Double]) = {
+
+    trainData.persist()
 
     val numberOfFeatures: Int = trainData.first() match {
       case Instance(_, features) => features.size
@@ -205,7 +227,7 @@ object MyLogisticRegression {
 
     // compute confusion matrix, using ACTION to ensure the correctness
     val sc: SparkContext = SparkContext.getOrCreate()
-    
+
     // accumulators to store confusion matrix
     val truePositiveAcc: LongAccumulator = sc.longAccumulator("truePositive")
     val falsePositiveAcc: LongAccumulator = sc.longAccumulator("falsePositive")
@@ -287,7 +309,7 @@ object MyLogisticRegression {
     val trainingMethod: String = "Gradient";
 
     // TODO, comment setMaster to run in a cluster
-    val conf = new SparkConf().setAppName("My Logistic Regression").setMaster("local[2]")
+    val conf = new SparkConf().setAppName("My Logistic Regression")//.setMaster("local[2]")
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
@@ -322,7 +344,6 @@ object MyLogisticRegression {
     val (trainDataDF, testDataDF) = (trainTestSplitArr(0), trainTestSplitArr(1))
 
     /* begin data preparation */
-    trainDataDF.persist()
 
     // 1. form a vector of all level features
     val allFeaturesVecAssembler = new VectorAssembler().setInputCols(featuresCols).setOutputCol("allFeaturesVec")
@@ -380,7 +401,6 @@ object MyLogisticRegression {
     println("lost: " + lost.mkString(", "))
 
     /* end train */
-    trainDataDF.unpersist()
 
     /* begin test */
 
@@ -393,9 +413,6 @@ object MyLogisticRegression {
 
     // lazy prediction, be cautious
     val (predictions, confusionMatrix) = predict(predictionProbs, 0.5)
-
-    // force to predict all
-    predictions.count()
 
     predictions.toDF("label", "features", "prediction").select("label", "prediction").show()
 

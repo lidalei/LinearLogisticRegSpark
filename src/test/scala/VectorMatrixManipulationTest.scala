@@ -4,7 +4,6 @@ import Helper.InstanceUtilities.{ConfusionMatrix, initializeSC, score}
 import org.apache.spark.ml.linalg.{DenseMatrix, Matrices, Matrix, Vector, Vectors}
 import VectorMatrixManipulation._
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.util.LongAccumulator
 import org.scalatest.FunSuite
 import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
@@ -25,21 +24,13 @@ class VectorMatrixManipulationTest extends FunSuite {
 
     val sc: SparkContext = initializeSC(conf = new SparkConf().setAppName("Test").setMaster("local"))
 
-    // accumulators to store confusion matrix
-    val truePositiveAcc: LongAccumulator = sc.longAccumulator("truePositive")
-    val falsePositiveAcc: LongAccumulator = sc.longAccumulator("falsePositive")
-    val trueNegativeAcc: LongAccumulator = sc.longAccumulator("trueNegative")
-    val falseNegativeAcc: LongAccumulator = sc.longAccumulator("falseNegative")
+    // confusion matrix
+    val truePositive: Long = 100
+    val falsePositive: Long = 50
+    val trueNegative: Long = 10
+    val falseNegative: Long = 5
 
-    truePositiveAcc.add(100)
-
-    trueNegativeAcc.add(50)
-
-    falsePositiveAcc.add(10)
-
-    falseNegativeAcc.add(5)
-
-    val confusionMatrix: ConfusionMatrix = ConfusionMatrix(truePositiveAcc, trueNegativeAcc, falsePositiveAcc, falseNegativeAcc)
+    val confusionMatrix: ConfusionMatrix = ConfusionMatrix(truePositive, trueNegative, falsePositive, falseNegative)
   }
 
   test("test VectorManipulation functions") {
