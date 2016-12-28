@@ -5,7 +5,6 @@ import org.apache.spark.ml.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
-import org.apache.spark.util.LongAccumulator
 
 /**
   * Created by Sophie on 12/2/16.
@@ -35,28 +34,28 @@ object InstanceUtilities {
   case class InstanceWithPredictionProb(label: Double, features: Vector, predictionProb: Double)
   case class InstanceWithPrediction(label: Double, features: Vector, prediction: Double)
 
-  case class ConfusionMatrix(truePositiveAcc: LongAccumulator, trueNegativeAcc: LongAccumulator, falsePositiveAcc: LongAccumulator, falseNegativeAcc: LongAccumulator) {
+  case class ConfusionMatrix(truePositive: Long, trueNegative: Long, falsePositive: Long, falseNegative: Long) {
     override def toString: String = {
-      "truePositive: " + truePositiveAcc.value + ", trueNegative: " + trueNegativeAcc.value + ", falsePositive: " + falsePositiveAcc.value + ", falseNegative: " + falseNegativeAcc.value
+      "truePositive: " + truePositive + ", trueNegative: " + trueNegative + ", falsePositive: " + falsePositive + ", falseNegative: " + falseNegative
     }
   }
 
   def score(confusionMatrix: ConfusionMatrix, scoreType: String = "accuracy"): Double = {
     confusionMatrix match {
-      case ConfusionMatrix(truePositiveAcc, trueNegativeAcc, falsePositiveAcc, falseNegativeAcc) => {
+      case ConfusionMatrix(truePositive, trueNegative, falsePositive, falseNegative) => {
 
-        val predictedPositive = truePositiveAcc.value + falsePositiveAcc.value
-        val predictedNegative = trueNegativeAcc.value + falseNegativeAcc.value
+        val predictedPositive = truePositive + falsePositive
+        val predictedNegative = trueNegative + falseNegative
 
-        val actualPositive = truePositiveAcc.value + falseNegativeAcc.value
-        val actualNegative = trueNegativeAcc.value + falsePositiveAcc.value
+        val actualPositive = truePositive + falseNegative
+        val actualNegative = trueNegative + falsePositive
 
-        val correctPredictions = truePositiveAcc.value + trueNegativeAcc.value
+        val correctPredictions = truePositive + trueNegative
 
         scoreType match {
           case "accuracy" => correctPredictions.toDouble / (predictedNegative + predictedPositive)
-          case "precision" => truePositiveAcc.value.toDouble / predictedPositive
-          case "recall" => truePositiveAcc.value.toDouble / actualPositive
+          case "precision" => truePositive.toDouble / predictedPositive
+          case "recall" => truePositive.toDouble / actualPositive
         }
       }
     }

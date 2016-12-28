@@ -33,21 +33,14 @@ object MyLogisticRegression {
     * @return theta and intercept
     */
   def computeGradient(data: RDD[Instance], theta: Vector, intercept: Double): (Vector, Double) = {
-    val sc: SparkContext = SparkContext.getOrCreate()
-    val interceptAcc: DoubleAccumulator = sc.doubleAccumulator("interceptAcc")
-    interceptAcc.reset()
-    // compute gradient, TODO implement mini-batch
-    val gradient: Vector = data.map({
+    // compute gradient
+    data.map({
       case Instance(label, features) => {
         val gradientFactor: Double = sigmoid(vecInnerProduct(theta, features) + intercept) - label
-        // intercept
-        interceptAcc.add(gradientFactor)
-        // theta
-        vecScale(features, gradientFactor)
+        // theta and intercept
+        (vecScale(features, gradientFactor), gradientFactor)
       }
-    }).reduce(vecAdd)
-
-    (gradient, interceptAcc.value)
+    }).reduce((pair1: (Vector, Double), pair2: (Vector, Double)) => (vecAdd(pair1._1, pair2._1), pair1._2 + pair2._2))
   }
 
   /**
@@ -94,6 +87,7 @@ object MyLogisticRegression {
     val lost = Array.fill[Double](maxIterations)(0.0)
     var decayedLearningRate = learningRate
 
+    // TODO implement mini-batch
     for {
       i <- 0 until maxIterations
     }
@@ -200,19 +194,27 @@ object MyLogisticRegression {
   def predict(testData: RDD[InstanceWithPredictionProb], threshold: Double = 0.5): (RDD[InstanceWithPrediction], ConfusionMatrix) = {
     require(threshold > 0 && threshold < 1)
 
-    val sc: SparkContext = SparkContext.getOrCreate()
+    // make predictions, lazy operation, be cautious, accumulator here might be updated more times due to failure of tasks
+    val predictions: RDD[InstanceWithPrediction] = testData.map{
+      case InstanceWithPredictionProb(label, features, predictionProb) => {
+        val prediction: Double = if(predictionProb >= threshold) 1.0 else 0.0
 
+        InstanceWithPrediction(label, features, prediction)
+      }
+    }
+
+    // compute confusion matrix, using ACTION to ensure the correctness
+    val sc: SparkContext = SparkContext.getOrCreate()
+    
     // accumulators to store confusion matrix
     val truePositiveAcc: LongAccumulator = sc.longAccumulator("truePositive")
     val falsePositiveAcc: LongAccumulator = sc.longAccumulator("falsePositive")
     val trueNegativeAcc: LongAccumulator = sc.longAccumulator("trueNegative")
     val falseNegativeAcc: LongAccumulator = sc.longAccumulator("falseNegative")
 
-    // make predictions
-    val predictions: RDD[InstanceWithPrediction] = testData.map({
-      case InstanceWithPredictionProb(label, features, predictionProb) => {
-        val prediction: Double = if(predictionProb >= threshold) 1.0 else 0.0
-
+    // when foreach is executed on a parallelism collection, here rdd, it will be executed in parallel
+    predictions.foreach{
+      case InstanceWithPrediction(label, _, prediction) => {
         if(prediction == 1.0 && label == 1.0) {
           truePositiveAcc.add(1)
         }
@@ -225,14 +227,12 @@ object MyLogisticRegression {
         else {
           falsePositiveAcc.add(1)
         }
-
-        InstanceWithPrediction(label, features, prediction)
       }
-    })
+    }
 
     // only driver program can get the value
-    // println("truePositive value" + truePositiveAcc.value) will print 0
-    (predictions, ConfusionMatrix(truePositiveAcc, trueNegativeAcc, falsePositiveAcc, falseNegativeAcc))
+    // since an action is executed, truePositiveAcc.value will get return the correct value
+    (predictions, ConfusionMatrix(truePositiveAcc.value, trueNegativeAcc.value, falsePositiveAcc.value, falseNegativeAcc.value))
 
   }
 
@@ -284,13 +284,15 @@ object MyLogisticRegression {
   def main(args: Array[String]): Unit = {
 
     // Gradient or Newton
-    val trainingMethod: String = "Newton";
+    val trainingMethod: String = "Gradient";
 
     // TODO, comment setMaster to run in a cluster
     val conf = new SparkConf().setAppName("My Logistic Regression").setMaster("local[2]")
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
+
+    sc.setLogLevel("WARN")
 
     import sparkSql.implicits._
     import sparkSql._
@@ -342,18 +344,18 @@ object MyLogisticRegression {
     /* end data preparation */
 
     /* begin train */
-    val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(40).setFitIntercept(true)
-    val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
-
-    val mlTheta: Vector = mlLogisticRegModel.coefficients
-    val mlIntercept: Double = mlLogisticRegModel.intercept
-    println("ML Theta: " + mlTheta.toArray.mkString(", "))
-    println("ML Intercept: " + mlIntercept)
-    println("ML Objective history: " + mlLogisticRegModel.summary.objectiveHistory.mkString(", "))
-
-    val mlPredictions = mlLogisticRegModel.transform(trTestDataDF)
-    println("ML Predictions: ")
-    mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).show()
+//    val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(40).setFitIntercept(true)
+//    val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
+//
+//    val mlTheta: Vector = mlLogisticRegModel.coefficients
+//    val mlIntercept: Double = mlLogisticRegModel.intercept
+//    println("ML Theta: " + mlTheta.toArray.mkString(", "))
+//    println("ML Intercept: " + mlIntercept)
+//    println("ML Objective history: " + mlLogisticRegModel.summary.objectiveHistory.mkString(", "))
+//
+//    val mlPredictions = mlLogisticRegModel.transform(trTestDataDF)
+//    println("ML Predictions: ")
+//    mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).show()
 
 
     // My Logistic Regression implementations
@@ -364,11 +366,11 @@ object MyLogisticRegression {
     val trainingStartTime = System.nanoTime()
 
     // gradient descent
-//    val (theta, intercept, lost): (Vector, Double, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.01, 0.0)
+    val (theta, intercept, lost): (Vector, Double, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.01, 0.0)
 
     // Newton's method
-    val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.1)
-    val intercept = 0.0
+//    val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.1)
+//    val intercept = 0.0
 
     val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
     println("Training duration: " + trainingDuration + " s.")
