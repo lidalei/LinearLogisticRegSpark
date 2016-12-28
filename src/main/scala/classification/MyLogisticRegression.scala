@@ -22,8 +22,14 @@ import org.apache.spark.ml.util.Identifiable
 
 object MyLogisticRegression {
 
-  def sigmoid(z: Double): Double  ={
-    1.0 / (1.0 + math.exp(-z))
+  def sigmoid(z: Double): Double  = {
+    if(z < 0) {
+      val expZ = math.exp(z)
+      expZ / (1.0 + expZ)
+    }
+    else {
+      1.0 / (1.0 + math.exp(-z))
+    }
   }
 
   /**
@@ -51,7 +57,7 @@ object MyLogisticRegression {
     * @param max
     * @return
     */
-  def clip(value: Double, min: Double, max: Double): Double = {
+  private def clip(value: Double, min: Double, max: Double): Double = {
     if(value > max) {
       max
     }
@@ -63,6 +69,22 @@ object MyLogisticRegression {
     }
   }
 
+
+  /** From package org.apache.spark.mllib.util.MLUtils
+    * When `x` is positive and large, computing `math.log(1 + math.exp(x))` will lead to arithmetic
+    * overflow. This will happen when `x > 709.78` which is not a very large number.
+    * It can be addressed by rewriting the formula into `x + math.log1p(math.exp(-x))` when `x > 0`.
+    * @param x a floating-point value as input.
+    * @return the result of `math.log(1 + math.exp(x))`.
+    */
+  private def log1pExp(x: Double): Double = {
+    if (x > 0) {
+      x + math.log1p(math.exp(-x))
+    } else {
+      math.log1p(math.exp(x))
+    }
+  }
+
   /**
     * Compute mean cross entropy instead of total cross entropy such that the result is comparable with Spark ML
     * @param data
@@ -70,16 +92,16 @@ object MyLogisticRegression {
     * @return
     */
   def crossEntropy(data: RDD[Instance], theta: Vector, intercept: Double): Double = {
-
-    // numerical stability, be cautious with zero and one
+    // numerical stability, be cautious with zero and one, using log sum trick
     data.map({
       case Instance(label, features) => {
-        val p = clip(sigmoid(vecInnerProduct(theta, features) + intercept), 1e-7, 1 - 1e-7)
+        val z: Double = vecInnerProduct(theta, features) + intercept
+
         if(label == 1.0) {
-          -math.log(p)
+          log1pExp(-z)
         }
         else {
-          -math.log(1.0 - p)
+          log1pExp(z)
         }
       }
     }).mean()
@@ -306,10 +328,12 @@ object MyLogisticRegression {
   def main(args: Array[String]): Unit = {
 
     // Gradient or Newton
-    val trainingMethod: String = "Gradient";
+    val trainingMethod: String = "Newton";
 
-    // TODO, comment setMaster to run in a cluster
-    val conf = new SparkConf().setAppName("My Logistic Regression")//.setMaster("local[2]")
+    // Do not use all the cores. TODO, comment setMaster to run in a cluster
+    val conf = new SparkConf()
+      .setAppName("My Logistic Regression").set("spark.executor.cores", "5")
+      .setMaster("local[2]")
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
@@ -365,18 +389,18 @@ object MyLogisticRegression {
     /* end data preparation */
 
     /* begin train */
-//    val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(40).setFitIntercept(true)
-//    val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
-//
-//    val mlTheta: Vector = mlLogisticRegModel.coefficients
-//    val mlIntercept: Double = mlLogisticRegModel.intercept
-//    println("ML Theta: " + mlTheta.toArray.mkString(", "))
-//    println("ML Intercept: " + mlIntercept)
-//    println("ML Objective history: " + mlLogisticRegModel.summary.objectiveHistory.mkString(", "))
-//
-//    val mlPredictions = mlLogisticRegModel.transform(trTestDataDF)
-//    println("ML Predictions: ")
-//    mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).show()
+    val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(40).setFitIntercept(true)
+    val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
+
+    val mlTheta: Vector = mlLogisticRegModel.coefficients
+    val mlIntercept: Double = mlLogisticRegModel.intercept
+    println("ML Theta: " + mlTheta.toArray.mkString(", "))
+    println("ML Intercept: " + mlIntercept)
+    println("ML Objective history: " + mlLogisticRegModel.summary.objectiveHistory.mkString(", "))
+
+    val mlPredictions = mlLogisticRegModel.transform(trTestDataDF)
+    println("ML Predictions: ")
+    mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).show()
 
 
     // My Logistic Regression implementations
@@ -387,11 +411,11 @@ object MyLogisticRegression {
     val trainingStartTime = System.nanoTime()
 
     // gradient descent
-    val (theta, intercept, lost): (Vector, Double, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.01, 0.0)
+//    val (theta, intercept, lost): (Vector, Double, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.1, 0.0)
 
     // Newton's method
-//    val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.1)
-//    val intercept = 0.0
+    val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.1)
+    val intercept = 0.0
 
     val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
     println("Training duration: " + trainingDuration + " s.")
@@ -439,6 +463,9 @@ object MyLogisticRegression {
 //
 //
 //    testDataDF.unpersist()
+
+
+    sc.stop()
   }
 
 }
