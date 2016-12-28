@@ -14,6 +14,7 @@ import hyperparameter.tuning.MyCrossValidation.kFold
 import org.apache.spark.ml.param.{DoubleParam, IntParam, ParamMap, ParamValidators}
 import org.apache.spark.ml.tuning.ParamGridBuilder
 import org.apache.spark.ml.util.Identifiable
+import org.apache.spark.storage.StorageLevel
 
 /**
   * Created by Sophie on 11/23/16.
@@ -22,7 +23,8 @@ import org.apache.spark.ml.util.Identifiable
 
 object MyLogisticRegression {
 
-  def sigmoid(z: Double): Double  = {
+  private def sigmoid(z: Double): Double  = {
+    // http://timvieira.github.io/blog/post/2014/02/11/exp-normalize-trick/
     if(z < 0) {
       val expZ = math.exp(z)
       expZ / (1.0 + expZ)
@@ -38,7 +40,7 @@ object MyLogisticRegression {
     * @param theta
     * @return theta and intercept
     */
-  def computeGradient(data: RDD[Instance], theta: Vector, intercept: Double): (Vector, Double) = {
+  private def computeGradient(data: RDD[Instance], theta: Vector, intercept: Double): (Vector, Double) = {
     // compute gradient
     data.map({
       case Instance(label, features) => {
@@ -50,7 +52,7 @@ object MyLogisticRegression {
   }
 
   /**
-    *
+    * @deprecated
     * Clip the value into (min, max) to avoid numerical instability
     * @param value
     * @param min
@@ -91,8 +93,9 @@ object MyLogisticRegression {
     * @param theta
     * @return
     */
-  def crossEntropy(data: RDD[Instance], theta: Vector, intercept: Double): Double = {
+  private def crossEntropy(data: RDD[Instance], theta: Vector, intercept: Double): Double = {
     // numerical stability, be cautious with zero and one, using log sum trick
+    // https://lingpipe-blog.com/2012/02/16/howprevent-overflow-underflow-logistic-regression/
     data.map({
       case Instance(label, features) => {
         val z: Double = vecInnerProduct(theta, features) + intercept
@@ -107,18 +110,24 @@ object MyLogisticRegression {
     }).mean()
   }
 
+
   /**
-    * MyLogisticRegression train
+    * MyLogisticRegression train, Gradient descent or Newton's method
     * Somewhere the bias should be considered...
+    * @param trainingMethod if gradient descent, intercept is fit separately. If Newton's, features contains all-one column
     * @param trainData
     * @param maxIterations
     * @param learningRate
     * @param lambda
+    * @param tolerance
     * @return fit coefficients, theta plus intercept plus training losts
     */
-  def trainGradientDescent(trainData: RDD[Instance], maxIterations: Int, learningRate: Double, lambda: Double): (Vector, Double, Array[Double]) = {
+  def train(trainingMethod: String = "Gradient", trainData: RDD[Instance], maxIterations: Int, learningRate: Double, lambda: Double, tolerance: Double = 1e-6): (Vector, Double, Array[Double]) = {
 
-    trainData.persist()
+    val handlePersistence = trainData.getStorageLevel == StorageLevel.NONE
+    if(handlePersistence) {
+      trainData.persist(StorageLevel.MEMORY_AND_DISK)
+    }
 
     val numberOfFeatures: Int = trainData.first() match {
       case Instance(_, features) => features.size
@@ -132,13 +141,15 @@ object MyLogisticRegression {
     var decayedLearningRate = learningRate
 
     // TODO implement mini-batch
-    for {
-      i <- 0 until maxIterations
-    }
-      {
+    var (i, delta): (Int, Double) = (0, 100.0)
+
+    if(trainingMethod.equals("Gradient")) {
+
+      while(i < maxIterations && delta > tolerance) {
         if(i >= 2 && lost(i - 1) > lost(i - 2)) {
           decayedLearningRate = decayedLearningRate / 2.0
         }
+
         // gradient of cross entropy at theta and intercept
         val (gradientOfThetaXE, gradientOfInterceptXE) = computeGradient(trainData, theta, intercept)
 
@@ -151,45 +162,18 @@ object MyLogisticRegression {
 
         val deltaIntercept = -decayedLearningRate * gradientOfInterceptXE
         intercept = intercept + deltaIntercept
-
         lost(i) = crossEntropy(trainData, theta, intercept)
+
+        i += 1
+        // TODO, change of delta or change of cross entropy
+        delta = math.sqrt(vecNormPower(deltaTheta, 2) + deltaIntercept * deltaIntercept)
       }
-
-    (theta, intercept, lost)
-  }
-
-  def computeHessianMatrix(data: RDD[Instance], theta: Vector): Vector = {
-    data.map({
-      case Instance(label: Double, features: Vector) => {
-        val sigma = sigmoid(vecInnerProduct(theta, features))
-        vecScale(outerVecProduct(features), sigma * (1 - sigma))
-      }
-    }).reduce(vecAdd)
-  }
-
-  /**
-    * train with Newton's method
-    * @param trainData, including all-one column
-    * @param maxIterations
-    * @param learningRate
-    * @return
-    */
-  def trainNewtonMethod(trainData: RDD[Instance], maxIterations: Int, learningRate: Double): (Vector, Array[Double]) = {
-    val numberOfFeatures: Int = trainData.first() match {
-      case Instance(_, features) => features.size
     }
+    else {
+      // keep intercept as zero
+      intercept = 0.0
 
-    // set initial coefficients, with all one column
-    var theta: Vector = Vectors.zeros(numberOfFeatures)
-
-    val intercept: Double = 0.0
-    val lost = Array.fill[Double](maxIterations)(0.0)
-    var decayedLearningRate = learningRate
-
-    for {
-      i <- 0 until maxIterations
-    }
-      {
+      while(i < maxIterations && delta > tolerance) {
         if(i >= 2 && lost(i - 1) > lost(i - 2)) {
           decayedLearningRate = decayedLearningRate / 2.0
         }
@@ -209,9 +193,28 @@ object MyLogisticRegression {
         theta = vecAdd(theta, deltaTheta)
 
         lost(i) = crossEntropy(trainData, theta, intercept)
-      }
 
-    (theta, lost)
+        i += 1
+        // TODO, change of delta or change of cross entropy
+        delta = math.sqrt(vecNormPower(deltaTheta, 2))
+      }
+    }
+
+    if(handlePersistence) {
+      trainData.unpersist()
+    }
+
+    // remove un-computed lost if early stop
+    (theta, intercept, lost.slice(0, i))
+  }
+
+  def computeHessianMatrix(data: RDD[Instance], theta: Vector): Vector = {
+    data.map({
+      case Instance(label: Double, features: Vector) => {
+        val sigma = sigmoid(vecInnerProduct(theta, features))
+        vecScale(outerVecProduct(features), sigma * (1 - sigma))
+      }
+    }).reduce(vecAdd)
   }
 
 
@@ -310,7 +313,7 @@ object MyLogisticRegression {
       val meanScore: Double = kFolds.map{
         case (trainData: RDD[Instance], testData: RDD[Instance]) => {
           // add lambda
-          val (theta: Vector, intercept: Double, lost: Array[Double]) = trainGradientDescent(trainData, maxIterations, learningRate, lambda)
+          val (theta: Vector, intercept: Double, lost: Array[Double]) = train("Gradient", trainData, maxIterations, learningRate, lambda)
           val predictionsProb: RDD[InstanceWithPredictionProb] = predictProb(testData, theta, intercept)
           val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(predictionsProb, threshold)
           score(confusionMatrix, scoreType)
@@ -327,13 +330,15 @@ object MyLogisticRegression {
     */
   def main(args: Array[String]): Unit = {
 
+    // whether to display the result of mllib logistic regression
+    val displayMLLogReg: Boolean = false
     // Gradient or Newton
-    val trainingMethod: String = "Newton";
+    val trainingMethod: String = "Gradient"
 
     // Do not use all the cores. TODO, comment setMaster to run in a cluster
     val conf = new SparkConf()
       .setAppName("My Logistic Regression").set("spark.executor.cores", "5")
-      .setMaster("local[2]")
+      //.setMaster("local[2]")
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
@@ -389,19 +394,21 @@ object MyLogisticRegression {
     /* end data preparation */
 
     /* begin train */
-    val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(40).setFitIntercept(true)
-    val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
+    // mllib logistic regression, very similar with Newton's method
+    if(displayMLLogReg) {
+      val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(40).setFitIntercept(true)
+      val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
 
-    val mlTheta: Vector = mlLogisticRegModel.coefficients
-    val mlIntercept: Double = mlLogisticRegModel.intercept
-    println("ML Theta: " + mlTheta.toArray.mkString(", "))
-    println("ML Intercept: " + mlIntercept)
-    println("ML Objective history: " + mlLogisticRegModel.summary.objectiveHistory.mkString(", "))
+      val mlTheta: Vector = mlLogisticRegModel.coefficients
+      val mlIntercept: Double = mlLogisticRegModel.intercept
+      println("ML Theta: " + mlTheta.toArray.mkString(", "))
+      println("ML Intercept: " + mlIntercept)
+      println("ML Objective history: " + mlLogisticRegModel.summary.objectiveHistory.mkString(", "))
 
-    val mlPredictions = mlLogisticRegModel.transform(trTestDataDF)
-    println("ML Predictions: ")
-    mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).show()
-
+      val mlPredictions = mlLogisticRegModel.transform(trTestDataDF)
+      println("ML Predictions: ")
+      mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).show()
+    }
 
     // My Logistic Regression implementations
 
@@ -410,12 +417,8 @@ object MyLogisticRegression {
 
     val trainingStartTime = System.nanoTime()
 
-    // gradient descent
-//    val (theta, intercept, lost): (Vector, Double, Array[Double]) = trainGradientDescent(trainDataRDD, 40, 0.1, 0.0)
-
-    // Newton's method
-    val (theta, lost): (Vector, Array[Double]) = trainNewtonMethod(trainDataRDD, 40, 0.1)
-    val intercept = 0.0
+    // gradient descent or Newton's method
+    val (theta, intercept, lost): (Vector, Double, Array[Double]) = train(trainingMethod, trainDataRDD, 100, 0.001, 0.0)
 
     val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
     println("Training duration: " + trainingDuration + " s.")
