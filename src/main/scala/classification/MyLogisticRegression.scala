@@ -8,12 +8,13 @@ import org.apache.spark.ml.linalg.{DenseMatrix, Matrices, Vector, Vectors}
 import org.apache.spark.rdd.RDD
 import Helper.VectorMatrixManipulation._
 import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressionModel}
-import org.apache.spark.util.{DoubleAccumulator, LongAccumulator}
+import org.apache.spark.util.LongAccumulator
 import Helper.InstanceUtilities._
 import hyperparameter.tuning.MyCrossValidation.kFold
 import org.apache.spark.ml.param.{DoubleParam, IntParam, ParamMap, ParamValidators}
 import org.apache.spark.ml.tuning.ParamGridBuilder
 import org.apache.spark.ml.util.Identifiable
+import org.apache.spark.mllib.evaluation.MulticlassMetrics
 import org.apache.spark.storage.StorageLevel
 
 /**
@@ -116,13 +117,18 @@ object MyLogisticRegression {
     * Somewhere the bias should be considered...
     * @param trainingMethod if gradient descent, intercept is fit separately. If Newton's, features contains all-one column
     * @param trainData
+    * @param batchSize the number of batches, default 1, only applies on Gradient descent now
     * @param maxIterations
     * @param learningRate
     * @param lambda
     * @param tolerance
     * @return fit coefficients, theta plus intercept plus training losts
     */
-  def train(trainingMethod: String = "Gradient", trainData: RDD[Instance], maxIterations: Int, learningRate: Double, lambda: Double, tolerance: Double = 1e-6): (Vector, Double, Array[Double]) = {
+  def train(trainingMethod: String = "Gradient", batchSize: Int = 1)
+           (trainData: RDD[Instance], maxIterations: Int, learningRate: Double, lambda: Double, tolerance: Double = 1e-6): (Vector, Double, Array[Double]) = {
+
+    require(trainingMethod.equals("Gradient") || trainingMethod.equals("Newton"))
+    require(batchSize >= 1 && maxIterations >= 1 && lambda >= 0.0 && tolerance >= 0.0)
 
     val handlePersistence = trainData.getStorageLevel == StorageLevel.NONE
     if(handlePersistence) {
@@ -140,11 +146,14 @@ object MyLogisticRegression {
     val lost = Array.fill[Double](maxIterations)(0.0)
     var decayedLearningRate = learningRate
 
-    // TODO implement mini-batch
+    // TODO implement mini-batch or early stop at validation set
     var (i, delta): (Int, Double) = (0, 100.0)
 
     if(trainingMethod.equals("Gradient")) {
-
+//      if(batchSize > 1) {
+//        // divide data into batchSize parts
+//
+//      }
       while(i < maxIterations && delta > tolerance) {
         if(i >= 2 && lost(i - 1) > lost(i - 2)) {
           decayedLearningRate = decayedLearningRate / 2.0
@@ -313,7 +322,7 @@ object MyLogisticRegression {
       val meanScore: Double = kFolds.map{
         case (trainData: RDD[Instance], testData: RDD[Instance]) => {
           // add lambda
-          val (theta: Vector, intercept: Double, lost: Array[Double]) = train("Gradient", trainData, maxIterations, learningRate, lambda)
+          val (theta: Vector, intercept: Double, lost: Array[Double]) = train("Gradient")(trainData, maxIterations, learningRate, lambda)
           val predictionsProb: RDD[InstanceWithPredictionProb] = predictProb(testData, theta, intercept)
           val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(predictionsProb, threshold)
           score(confusionMatrix, scoreType)
@@ -331,14 +340,14 @@ object MyLogisticRegression {
   def main(args: Array[String]): Unit = {
 
     // whether to display the result of mllib logistic regression
-    val displayMLLogReg: Boolean = false
+    val displayMLLogReg: Boolean = true
     // Gradient or Newton
     val trainingMethod: String = "Gradient"
 
     // Do not use all the cores. TODO, comment setMaster to run in a cluster
     val conf = new SparkConf()
-      .setAppName("My Logistic Regression").set("spark.executor.cores", "5")
-      //.setMaster("local[2]")
+      .setAppName("My Logistic Regression").set("spark.executor.cores", "6")
+      .setMaster("local[2]")
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
@@ -396,8 +405,13 @@ object MyLogisticRegression {
     /* begin train */
     // mllib logistic regression, very similar with Newton's method
     if(displayMLLogReg) {
-      val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(40).setFitIntercept(true)
+      val trainingStartTime = System.nanoTime()
+
+      val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(100).setFitIntercept(true)
       val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
+
+      val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
+      println("ML training duration: " + trainingDuration + " s.")
 
       val mlTheta: Vector = mlLogisticRegModel.coefficients
       val mlIntercept: Double = mlLogisticRegModel.intercept
@@ -407,7 +421,13 @@ object MyLogisticRegression {
 
       val mlPredictions = mlLogisticRegModel.transform(trTestDataDF)
       println("ML Predictions: ")
-      mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).show()
+      mlPredictions.select(mlLogisticRegModel.getProbabilityCol, mlLogisticRegModel.getPredictionCol).take(20).foreach(println)
+
+      val biMetrics = new MulticlassMetrics(mlPredictions.select(mlLogisticRegModel.getPredictionCol, "label").rdd.map{
+        case Row(prediction: Double, label: Double) => (prediction, label)
+      })
+
+      println("ML accuracy: " + biMetrics.accuracy)
     }
 
     // My Logistic Regression implementations
@@ -418,7 +438,7 @@ object MyLogisticRegression {
     val trainingStartTime = System.nanoTime()
 
     // gradient descent or Newton's method
-    val (theta, intercept, lost): (Vector, Double, Array[Double]) = train(trainingMethod, trainDataRDD, 100, 0.001, 0.0)
+    val (theta, intercept, lost): (Vector, Double, Array[Double]) = train(trainingMethod)(trainDataRDD, 100, 0.0001, 0.1)
 
     val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
     println("Training duration: " + trainingDuration + " s.")
@@ -436,14 +456,14 @@ object MyLogisticRegression {
 
     val predictionProbs: RDD[InstanceWithPredictionProb] = predictProb(testDataRDD, theta, intercept)
 
-    predictionProbs.toDF().select("label", "predictionProb").show()
+    predictionProbs.toDF().select("label", "predictionProb").take(20).foreach(println)
 
     // lazy prediction, be cautious
     val (predictions, confusionMatrix) = predict(predictionProbs, 0.5)
 
-    predictions.toDF("label", "features", "prediction").select("label", "prediction").show()
+    predictions.toDF("label", "features", "prediction").select("label", "prediction").take(20).foreach(println)
 
-    println(confusionMatrix.toString)
+    println("accuracy: " + score(confusionMatrix))
 
     /* end test */
 
