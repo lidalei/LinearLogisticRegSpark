@@ -295,7 +295,57 @@ object MyLogisticRegression {
                      (maxIterations: Int, learningRate: Double, threshold: Double = 0.5): Array[(ParamMap, Double)] = {
 
     // search over the hyper-parameter grid spanned by l2 penalty and polynomial expansion
-    // outer loop - grid search, TODO, avoid unnecessary data pass (transform data only the number of polyDegree times)
+    // outer loop - grid search
+    var polyDegreesSet: Set[Int] = Set[Int]()
+    var lambdasSet: Set[Double] = Set[Double]()
+
+    paramGrid.foreach((paramMap: ParamMap) => {
+      val lambda: Double = paramMap.getOrElse[Double](lambdaDoubleParam, 0.0)
+      val polyDegree: Int = paramMap.getOrElse[Int](polyDegreeIntParam, 1)
+
+      polyDegreesSet += polyDegree
+      lambdasSet += lambda
+    })
+
+    val polyDegrees: Array[Int] = polyDegreesSet.toArray
+    val lambdas: Array[Double] = lambdasSet.toArray
+
+    // TODO, avoid unnecessary data pass (transform data only the number of polyDegree times)
+    val cvScores: Array[(Int, Double, Double)] = polyDegrees.map((polyDegree: Int) => {
+      // polynomial expansion
+      val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
+        .setOutputCol("CVFeaturesVec").setDegree(polyDegree)
+
+      val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "CVFeaturesVec", label, false)
+
+      // inner loop - cross validation
+      val kFolds: Array[(RDD[Instance], RDD[Instance])] = kFold(dataRDD, k)
+
+      val cvpolyDegreeScores: Array[Array[(Int, Double, Double)]] = kFolds.map{
+        case (trainData: RDD[Instance], testData: RDD[Instance]) => {
+          trainData.persist()
+          testData.persist()
+
+          // add lambda
+          val polyDegreeLambdasScores: Array[(Int, Double, Double)] = lambdas.map((lambda: Double) => {
+            val (theta: Vector, intercept: Double, lost: Array[Double]) = train("Gradient")(trainData, maxIterations, learningRate, lambda)
+            val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(testData, theta, intercept, threshold)
+
+            (polyDegree, lambda, score(confusionMatrix, scoreType))
+          })
+
+          trainData.unpersist()
+          testData.unpersist()
+
+          polyDegreeLambdasScores
+        }
+      }
+
+      cvpolyDegreeScores
+    }).fold(Array[Array[(Int, Double, Double)]]())(_ ++ _).fold(Array[(Int, Double, Double)]())(_ ++ _)
+
+    // TODO, compute mean cv scores
+
     paramGrid.map((paramMap: ParamMap) => {
       val lambda: Double = paramMap.getOrElse[Double](lambdaDoubleParam, 0.0)
       val polyDegree: Int = paramMap.getOrElse[Int](polyDegreeIntParam, 1)
@@ -304,7 +354,7 @@ object MyLogisticRegression {
       val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
         .setOutputCol("featuresVec").setDegree(polyDegree)
 
-      val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "featuresVec", label, true)
+      val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "featuresVec", label, false)
 
       // inner loop - cross validation
       val kFolds: Array[(RDD[Instance], RDD[Instance])] = kFold(dataRDD, k)
@@ -327,7 +377,7 @@ object MyLogisticRegression {
     */
   def main(args: Array[String]): Unit = {
     // whether to display the result of mllib logistic regression
-    val displayMLLogReg: Boolean = true
+    val displayMLLogReg: Boolean = false
 
     // Gradient or Newton
     val trainingMethod: String = "Gradient"
@@ -454,9 +504,9 @@ object MyLogisticRegression {
     val lambdaDoubleParam: DoubleParam = new DoubleParam(Identifiable.randomUID("lambdaDoubleParam"), "lambdaDoubleParam", "lambda parameter (>=0.0)", ParamValidators.gtEq(0))
     val polyDegreeIntParam: IntParam = new IntParam(Identifiable.randomUID("polyDegreeParam"), "polyDegreeParam", "polynomial degree parameter (>=1)", ParamValidators.gtEq(1))
 
-    val paramGrid = new ParamGridBuilder()
-      .addGrid(lambdaDoubleParam, Array(0.001, 0.01, 0.1))
-      .addGrid(polyDegreeIntParam, Array(1, 3))
+    val paramGrid: Array[ParamMap] = new ParamGridBuilder()
+      .addGrid(lambdaDoubleParam, Array(0.001, 0.01, 0.1, 0.5))
+      .addGrid(polyDegreeIntParam, Array(1, 2, 3))
       .build()
 
     val cvRes = crossValidation(trTrainDataDF, featuresVecName, "label", 3)(paramGrid, lambdaDoubleParam, polyDegreeIntParam, "accuracy")(40, 0.01, 0.5)
@@ -465,10 +515,6 @@ object MyLogisticRegression {
 
 
     /* test */
-//    testDataDF.persist()
-//
-//
-//    testDataDF.unpersist()
 
 
     sc.stop()
