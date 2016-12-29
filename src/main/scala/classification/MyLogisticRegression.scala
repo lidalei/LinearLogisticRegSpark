@@ -228,34 +228,21 @@ object MyLogisticRegression {
 
 
   /**
-    * MyLogisticRegression predict
-    * @param testData
-    * @param theta
-    * @param intercept
-    * @return rdd with predicted probability
-    */
-  def predictProb(testData: RDD[Instance], theta: Vector, intercept: Double): RDD[InstanceWithPredictionProb] = {
-    testData.map({
-      case Instance(label, features) => InstanceWithPredictionProb(label, features, sigmoid(vecInnerProduct(theta, features) + intercept))
-    })
-  }
-
-
-  /**
     * Make predictions and compute classification metrics
     * @param testData
     * @param threshold
     * @return
     */
-  def predict(testData: RDD[InstanceWithPredictionProb], threshold: Double = 0.5): (RDD[InstanceWithPrediction], ConfusionMatrix) = {
+  def predict(testData: RDD[Instance], theta: Vector, intercept: Double, threshold: Double = 0.5): (RDD[InstanceWithPrediction], ConfusionMatrix) = {
     require(threshold > 0 && threshold < 1)
 
     // make predictions, lazy operation, be cautious, accumulator here might be updated more times due to failure of tasks
     val predictions: RDD[InstanceWithPrediction] = testData.map{
-      case InstanceWithPredictionProb(label, features, predictionProb) => {
+      case Instance(label, features) => {
+        val predictionProb = sigmoid(vecInnerProduct(theta, features) + intercept)
         val prediction: Double = if(predictionProb >= threshold) 1.0 else 0.0
 
-        InstanceWithPrediction(label, features, prediction)
+        InstanceWithPrediction(label, features, predictionProb, prediction)
       }
     }
 
@@ -270,7 +257,7 @@ object MyLogisticRegression {
 
     // when foreach is executed on a parallelism collection, here rdd, it will be executed in parallel
     predictions.foreach{
-      case InstanceWithPrediction(label, _, prediction) => {
+      case InstanceWithPrediction(label, _, _, prediction) => {
         if(prediction == 1.0 && label == 1.0) {
           truePositiveAcc.add(1)
         }
@@ -314,7 +301,9 @@ object MyLogisticRegression {
       val polyDegree: Int = paramMap.getOrElse[Int](polyDegreeIntParam, 1)
 
       // polynomial expansion
-      val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName).setOutputCol("featuresVec").setDegree(polyDegree)
+      val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
+        .setOutputCol("featuresVec").setDegree(polyDegree)
+
       val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "featuresVec", label, true)
 
       // inner loop - cross validation
@@ -323,8 +312,7 @@ object MyLogisticRegression {
         case (trainData: RDD[Instance], testData: RDD[Instance]) => {
           // add lambda
           val (theta: Vector, intercept: Double, lost: Array[Double]) = train("Gradient")(trainData, maxIterations, learningRate, lambda)
-          val predictionsProb: RDD[InstanceWithPredictionProb] = predictProb(testData, theta, intercept)
-          val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(predictionsProb, threshold)
+          val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(testData, theta, intercept, threshold)
           score(confusionMatrix, scoreType)
       }}.sum / k
 
@@ -338,9 +326,9 @@ object MyLogisticRegression {
     * @param args, args(0) is the path to the dataset
     */
   def main(args: Array[String]): Unit = {
-
     // whether to display the result of mllib logistic regression
     val displayMLLogReg: Boolean = true
+
     // Gradient or Newton
     val trainingMethod: String = "Gradient"
 
@@ -454,31 +442,26 @@ object MyLogisticRegression {
     // Used in gradient descent or Newton's method, the last parameter is false, gradient descent, true, Newton's method
     val testDataRDD: RDD[Instance] = df2RDD(trTestDataDF, featuresVecName, "label", !trainingMethod.equals("Gradient"))
 
-    val predictionProbs: RDD[InstanceWithPredictionProb] = predictProb(testDataRDD, theta, intercept)
-
-    predictionProbs.toDF().select("label", "predictionProb").take(20).foreach(println)
-
     // lazy prediction, be cautious
-    val (predictions, confusionMatrix) = predict(predictionProbs, 0.5)
+    val (predictions, confusionMatrix) = predict(testDataRDD, theta, intercept, 0.5)
 
-    predictions.toDF("label", "features", "prediction").select("label", "prediction").take(20).foreach(println)
+    predictions.toDF("label", "features", "predictionProb", "prediction").select("label", "predictionProb", "prediction").take(20).foreach(println)
 
     println("accuracy: " + score(confusionMatrix))
 
     /* end test */
 
-//    val lambdaDoubleParam: DoubleParam = new DoubleParam(Identifiable.randomUID("lambdaDoubleParam"), "lambdaDoubleParam", "lambda parameter (>=0.0)", ParamValidators.gtEq(0))
-//    val polyDegreeIntParam: IntParam = new IntParam(Identifiable.randomUID("polyDegreeParam"), "polyDegreeParam", "polynomial degree parameter (>=1)", ParamValidators.gtEq(1))
-//
-//
-//    val paramGrid = new ParamGridBuilder()
-//      .addGrid(lambdaDoubleParam, Array(0.001, 0.01, 0.1))
-//      .addGrid(polyDegreeIntParam, Array(1, 3, 5))
-//      .build()
-//
-//    val cvRes = crossValidation(trTrainDataDF, featuresVecName, "label", 3)(paramGrid, lambdaDoubleParam, polyDegreeIntParam, "accuracy")(40, 0.01, 0.5)
-//
-//    cvRes.map(println)
+    val lambdaDoubleParam: DoubleParam = new DoubleParam(Identifiable.randomUID("lambdaDoubleParam"), "lambdaDoubleParam", "lambda parameter (>=0.0)", ParamValidators.gtEq(0))
+    val polyDegreeIntParam: IntParam = new IntParam(Identifiable.randomUID("polyDegreeParam"), "polyDegreeParam", "polynomial degree parameter (>=1)", ParamValidators.gtEq(1))
+
+    val paramGrid = new ParamGridBuilder()
+      .addGrid(lambdaDoubleParam, Array(0.001, 0.01, 0.1))
+      .addGrid(polyDegreeIntParam, Array(1, 3))
+      .build()
+
+    val cvRes = crossValidation(trTrainDataDF, featuresVecName, "label", 3)(paramGrid, lambdaDoubleParam, polyDegreeIntParam, "accuracy")(40, 0.01, 0.5)
+
+    cvRes.map(println)
 
 
     /* test */

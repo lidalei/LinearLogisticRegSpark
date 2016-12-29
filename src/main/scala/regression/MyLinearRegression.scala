@@ -12,7 +12,7 @@ import org.apache.spark.ml.regression.{LinearRegression, LinearRegressionModel}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.{DataFrame, Row}
-import Helper.InstanceUtilities.{Instance, InstanceWithPrediction, initializeSC, initializeSparkSession}
+import Helper.InstanceUtilities.{Instance, InstanceWithPredictionReg, initializeSC, initializeSparkSession}
 import org.apache.spark.SparkConf
 
 object MyLinearRegression {
@@ -34,18 +34,18 @@ object MyLinearRegression {
   }
 
 
-  def predict(theta: Vector, instances: RDD[Instance]): RDD[InstanceWithPrediction] = {
+  def predict(theta: Vector, instances: RDD[Instance]): RDD[InstanceWithPredictionReg] = {
     instances.map({
-      case Instance(label, features) => InstanceWithPrediction(label, features, vecInnerProduct(theta, features))
+      case Instance(label, features) => InstanceWithPredictionReg(label, features, vecInnerProduct(theta, features))
     })
   }
 
   /**
     * Compute RMSE
     */
-  def rmse(predictions: RDD[InstanceWithPrediction]): Double = {
+  def rmse(predictions: RDD[InstanceWithPredictionReg]): Double = {
     math.sqrt(predictions.map({
-      case InstanceWithPrediction(label, features, prediction) => (label - prediction) * (label - prediction)
+      case InstanceWithPredictionReg(label, features, prediction) => (label - prediction) * (label - prediction)
     }).sum() / predictions.count())
   }
 
@@ -116,7 +116,7 @@ object MyLinearRegression {
     // make predictions in test data
     val transformedTestData = pipelineModel.transform(testData)
     val linearRegTestRMSE = rmse(transformedTestData.select(col("label"), col("featuresVec"), col("prediction")).rdd.map({
-      case Row(label: Double, features: Vector, prediction: Double) => InstanceWithPrediction(label, features, prediction)
+      case Row(label: Double, features: Vector, prediction: Double) => InstanceWithPredictionReg(label, features, prediction)
     }))
 
     println("linearRegTestRMSE: " + linearRegTestRMSE)
@@ -137,7 +137,7 @@ object MyLinearRegression {
     println("myTheta: " + myTheta.toArray.mkString(", "))
 
     // make predictions on test data
-    val predictions: RDD[InstanceWithPrediction] = predict(myTheta, testInstances)
+    val predictions: RDD[InstanceWithPredictionReg] = predict(myTheta, testInstances)
 
     val myRMSE = rmse(predictions)
     println("myRMSE: " + myRMSE)
