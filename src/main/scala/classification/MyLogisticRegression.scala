@@ -140,14 +140,13 @@ object MyLogisticRegression {
     * @param trainingMethod "Gradient" or "Newton"
     * @param trainData If gradient descent, intercept is fit separately. If Newton's, features contains all-one column
     * @param batchSize The number of batches, default 1, only applies on Gradient descent now
-    * @param summary The flag whether record training lost
     * @param maxIterations The maximum number of iterations
     * @param learningRate The gradient descent (Newton's method) step
     * @param lambda l2 regularization
     * @param tolerance Iteration tolerance
     * @return fit coefficients, theta plus intercept plus training losts
     */
-  def train(trainingMethod: String = "Gradient", batchSize: Int = 1, summary: Boolean = true)
+  def train(trainingMethod: String = "Gradient", batchSize: Int = 1)
            (trainData: RDD[Instance], maxIterations: Int, learningRate: Double, lambda: Double, tolerance: Double = 1e-6): (Vector, Double, Array[Double]) = {
 
     require(trainingMethod.equals("Gradient") || trainingMethod.equals("Newton"))
@@ -170,14 +169,14 @@ object MyLogisticRegression {
     var decayedLearningRate = learningRate
 
     // TODO implement mini-batch or early stop at validation set
-    var (i, delta): (Int, Double) = (0, 100.0)
+    var (i, deltaLost): (Int, Double) = (0, 100.0)
 
     if(trainingMethod.equals("Gradient")) {
 //      if(batchSize > 1) {
 //        // divide data into batchSize parts
 //
 //      }
-      while(i < maxIterations && delta > tolerance) {
+      while(i < maxIterations && deltaLost > tolerance) {
         if(i >= 2 && lost(i - 1) > lost(i - 2)) {
           decayedLearningRate = decayedLearningRate / 2.0
         }
@@ -195,20 +194,21 @@ object MyLogisticRegression {
         val deltaIntercept = -decayedLearningRate * gradientOfInterceptXE
         intercept = intercept + deltaIntercept
 
-        if(summary) {
-          lost(i) = crossEntropy(trainData, theta, intercept)
+        lost(i) = crossEntropy(trainData, theta, intercept)
+
+        // change of delta or change of cross entropy
+        if(i >= 1) {
+          deltaLost = math.abs(lost(i) - lost(i - 1))
         }
 
         i += 1
-        // change of delta or change of cross entropy
-        delta = math.sqrt(vecNormPower(deltaTheta, 2) + deltaIntercept * deltaIntercept)
       }
     }
     else {
       // keep intercept as zero
       intercept = 0.0
 
-      while(i < maxIterations && delta > tolerance) {
+      while(i < maxIterations && deltaLost > tolerance) {
         if(i >= 2 && lost(i - 1) > lost(i - 2)) {
           decayedLearningRate = decayedLearningRate / 2.0
         }
@@ -227,13 +227,14 @@ object MyLogisticRegression {
 
         theta = vecAdd(theta, deltaTheta)
 
-        if(summary) {
-          lost(i) = crossEntropy(trainData, theta, intercept)
+        lost(i) = crossEntropy(trainData, theta, intercept)
+
+        if(i >= 1) {
+          // change of delta or change of cross entropy
+          deltaLost = lost(i) - lost(i - 1)
         }
 
         i += 1
-        // change of delta or change of cross entropy
-        delta = math.sqrt(vecNormPower(deltaTheta, 2))
       }
     }
 
@@ -248,8 +249,8 @@ object MyLogisticRegression {
 
   /**
     * Make predictions and compute classification metrics
-    * @param testData the data to make predictions on
-    * @param threshold the prediction threshold, default 0.5
+    * @param testData The data to make predictions on
+    * @param threshold The prediction threshold, default 0.5
     * @return Predictions and confusion matrix
     */
   def predict(testData: RDD[Instance], theta: Vector, intercept: Double, threshold: Double = 0.5): (RDD[InstanceWithPrediction], ConfusionMatrix) = {
@@ -300,18 +301,18 @@ object MyLogisticRegression {
   /**
     * Cross validation to do hyperparameter tuning for logistic regression
     * @param trainingMethod "Gradient" or "Newton"
-    * @param batchSize Int, at least one, the number of batches, default 1, full gradient descent
+    * @param batchSize Int, the number of batches, at least one, and default 1, which represents full gradient descent
     * @param dataDF DataFrame used to optimize hyperparameters and train a "best" model usign the optimal hyperparameters
-    * @param featuresVecName the column (features vector) used to make predictions
-    * @param label the target column name, default "label"
-    * @param k the number of folds used in cross validation, defaul 3-Fold
-    * @param paramGrid the search space of hyperparameters
+    * @param featuresVecName The column (features vector) used to make predictions
+    * @param label The target column name, default "label"
+    * @param k The number of folds used in cross validation, defaul 3-Fold
+    * @param paramGrid The search space of hyperparameters
     * @param lambdaDoubleParam lambda, used in l2 regularization
     * @param polyDegreeIntParam polynomial expansion degree
-    * @param scoreType the metric deciding the optimal hyperparameters
-    * @param maxIterations maximum number of iterations
-    * @param learningRate gradient descent (Newton's method) step
-    * @param threshold prediction threshold, default is 0.5
+    * @param scoreType The metric deciding the optimal hyperparameters
+    * @param maxIterations Maximum number of iterations
+    * @param learningRate Gradient descent (Newton's method) step
+    * @param threshold Prediction threshold, default is 0.5
     * @return Best theta, intercept, training lost using, this best hyperparameters, (parameters, mean cross validation score)
     */
   def crossValidation(trainingMethod: String = "Gradient", batchSize: Int = 1)
@@ -340,7 +341,7 @@ object MyLogisticRegression {
         val meanScore: Double = kFolds.map{
           case (trainData: RDD[Instance], testData: RDD[Instance]) => {
             // add lambda
-            val (theta: Vector, intercept: Double, lost: Array[Double]) = train(trainingMethod, summary = false)(trainData, maxIterations, learningRate, lambda)
+            val (theta: Vector, intercept: Double, lost: Array[Double]) = train(trainingMethod)(trainData, maxIterations, learningRate, lambda)
             val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(testData, theta, intercept, threshold)
             score(confusionMatrix, scoreType)
           }}.sum / k
@@ -425,7 +426,7 @@ object MyLogisticRegression {
   def main(args: Array[String]): Unit = {
     // whether to display the result of mllib logistic regression
     val displayMLLogReg: Boolean = false
-    val displayMyLogReg: Boolean = true
+    val displayMyLogReg: Boolean = false
 
     // Gradient or Newton
     val trainingMethod: String = "Gradient"
@@ -561,8 +562,8 @@ object MyLogisticRegression {
       new IntParam(Identifiable.randomUID("polyDegree"), "polyDegree", "polynomial degree parameter (>=1)", ParamValidators.gtEq(1))
 
     val paramGrid: Array[ParamMap] = new ParamGridBuilder()
-      .addGrid(lambdaDoubleParam, Array(0.001, 0.01, 0.1, 0.5))
-      .addGrid(polyDegreeIntParam, Array(1, 2, 3))
+      .addGrid(lambdaDoubleParam, Array(0.01, 0.1))
+      .addGrid(polyDegreeIntParam, Array(1, 3))
       .build()
 
     val trainingStartTime = System.nanoTime()
