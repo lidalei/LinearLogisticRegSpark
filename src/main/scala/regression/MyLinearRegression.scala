@@ -69,8 +69,8 @@ object MyLinearRegression {
     // read data as a dataframe
     val data: DataFrame = sparkSql.read.text(filePath)
 
-    // split data into train and test, TODO, to be changed
-    val trainTestSplitArr: Array[DataFrame] = data.randomSplit(Array(0.8, 0.2))
+    // split data into train and test
+    val trainTestSplitArr: Array[DataFrame] = data.randomSplit(Array(0.7, 0.3))
     val (trainData, testData) = (trainTestSplitArr(0), trainTestSplitArr(1))
 
     val l2Regularization: Double = 0.1
