@@ -24,6 +24,11 @@ import org.apache.spark.storage.StorageLevel
 
 object MyLogisticRegression {
 
+  /**
+    * Sigmoid function
+    * @param z Independent variable
+    * @return Dependent variable
+    */
   private def sigmoid(z: Double): Double  = {
     // http://timvieira.github.io/blog/post/2014/02/11/exp-normalize-trick/
     if(z < 0) {
@@ -37,28 +42,29 @@ object MyLogisticRegression {
 
   /**
     * Compute the gradient of total cross entropy in terms of parameters, Vector theta.
-    * @param data
-    * @param theta
-    * @return theta and intercept
+    * @param data Used to compute gradient
+    * @param theta in the point of theta
+    * @param intercept and intercept
+    * @return Pair (gradient of theta, gradient of intercept)
     */
   private def computeGradient(data: RDD[Instance], theta: Vector, intercept: Double): (Vector, Double) = {
     // compute gradient
-    data.map({
+    data.map{
       case Instance(label, features) => {
         val gradientFactor: Double = sigmoid(vecInnerProduct(theta, features) + intercept) - label
         // theta and intercept
         (vecScale(features, gradientFactor), gradientFactor)
       }
-    }).reduce((pair1: (Vector, Double), pair2: (Vector, Double)) => (vecAdd(pair1._1, pair2._1), pair1._2 + pair2._2))
+    }.reduce((pair1: (Vector, Double), pair2: (Vector, Double)) => (vecAdd(pair1._1, pair2._1), pair1._2 + pair2._2))
   }
 
   /**
     * @deprecated
     * Clip the value into (min, max) to avoid numerical instability
-    * @param value
-    * @param min
-    * @param max
-    * @return
+    * @param value The value to be clipped
+    * @param min The lower boundary
+    * @param max The upper boundary
+    * @return Clipped value
     */
   private def clip(value: Double, min: Double, max: Double): Double = {
     if(value > max) {
@@ -90,14 +96,15 @@ object MyLogisticRegression {
 
   /**
     * Compute mean cross entropy instead of total cross entropy such that the result is comparable with Spark ML
-    * @param data
-    * @param theta
-    * @return
+    * @param data Used to compute cross entropy
+    * @param theta in the point of theta
+    * @param intercept and intercept
+    * @return cross entropy
     */
   private def crossEntropy(data: RDD[Instance], theta: Vector, intercept: Double): Double = {
     // numerical stability, be cautious with zero and one, using log sum trick
     // https://lingpipe-blog.com/2012/02/16/howprevent-overflow-underflow-logistic-regression/
-    data.map({
+    data.map{
       case Instance(label, features) => {
         val z: Double = vecInnerProduct(theta, features) + intercept
 
@@ -108,23 +115,39 @@ object MyLogisticRegression {
           log1pExp(z)
         }
       }
-    }).mean()
+    }.mean
+  }
+
+  /**
+    * Compute Hessian matrix
+    * @param data Data
+    * @param theta contains intercept as the last element
+    * @return Hessian matrix, X.T * S * X
+    */
+  private def computeHessianMatrix(data: RDD[Instance], theta: Vector): Vector = {
+    data.map({
+      case Instance(label: Double, features: Vector) => {
+        val sigma = sigmoid(vecInnerProduct(theta, features))
+        vecScale(outerVecProduct(features), sigma * (1 - sigma))
+      }
+    }).reduce(vecAdd)
   }
 
 
   /**
     * MyLogisticRegression train, Gradient descent or Newton's method
     * Somewhere the bias should be considered...
-    * @param trainingMethod if gradient descent, intercept is fit separately. If Newton's, features contains all-one column
-    * @param trainData
-    * @param batchSize the number of batches, default 1, only applies on Gradient descent now
-    * @param maxIterations
-    * @param learningRate
-    * @param lambda
-    * @param tolerance
+    * @param trainingMethod "Gradient" or "Newton"
+    * @param trainData If gradient descent, intercept is fit separately. If Newton's, features contains all-one column
+    * @param batchSize The number of batches, default 1, only applies on Gradient descent now
+    * @param summary The flag whether record training lost
+    * @param maxIterations The maximum number of iterations
+    * @param learningRate The gradient descent (Newton's method) step
+    * @param lambda l2 regularization
+    * @param tolerance Iteration tolerance
     * @return fit coefficients, theta plus intercept plus training losts
     */
-  def train(trainingMethod: String = "Gradient", batchSize: Int = 1)
+  def train(trainingMethod: String = "Gradient", batchSize: Int = 1, summary: Boolean = true)
            (trainData: RDD[Instance], maxIterations: Int, learningRate: Double, lambda: Double, tolerance: Double = 1e-6): (Vector, Double, Array[Double]) = {
 
     require(trainingMethod.equals("Gradient") || trainingMethod.equals("Newton"))
@@ -171,10 +194,13 @@ object MyLogisticRegression {
 
         val deltaIntercept = -decayedLearningRate * gradientOfInterceptXE
         intercept = intercept + deltaIntercept
-        lost(i) = crossEntropy(trainData, theta, intercept)
+
+        if(summary) {
+          lost(i) = crossEntropy(trainData, theta, intercept)
+        }
 
         i += 1
-        // TODO, change of delta or change of cross entropy
+        // change of delta or change of cross entropy
         delta = math.sqrt(vecNormPower(deltaTheta, 2) + deltaIntercept * deltaIntercept)
       }
     }
@@ -201,10 +227,12 @@ object MyLogisticRegression {
 
         theta = vecAdd(theta, deltaTheta)
 
-        lost(i) = crossEntropy(trainData, theta, intercept)
+        if(summary) {
+          lost(i) = crossEntropy(trainData, theta, intercept)
+        }
 
         i += 1
-        // TODO, change of delta or change of cross entropy
+        // change of delta or change of cross entropy
         delta = math.sqrt(vecNormPower(deltaTheta, 2))
       }
     }
@@ -217,21 +245,12 @@ object MyLogisticRegression {
     (theta, intercept, lost.slice(0, i))
   }
 
-  def computeHessianMatrix(data: RDD[Instance], theta: Vector): Vector = {
-    data.map({
-      case Instance(label: Double, features: Vector) => {
-        val sigma = sigmoid(vecInnerProduct(theta, features))
-        vecScale(outerVecProduct(features), sigma * (1 - sigma))
-      }
-    }).reduce(vecAdd)
-  }
-
 
   /**
     * Make predictions and compute classification metrics
-    * @param testData
-    * @param threshold
-    * @return
+    * @param testData the data to make predictions on
+    * @param threshold the prediction threshold, default 0.5
+    * @return Predictions and confusion matrix
     */
   def predict(testData: RDD[Instance], theta: Vector, intercept: Double, threshold: Double = 0.5): (RDD[InstanceWithPrediction], ConfusionMatrix) = {
     require(threshold > 0 && threshold < 1)
@@ -276,98 +295,126 @@ object MyLogisticRegression {
     // only driver program can get the value
     // since an action is executed, truePositiveAcc.value will get return the correct value
     (predictions, ConfusionMatrix(truePositiveAcc.value, trueNegativeAcc.value, falsePositiveAcc.value, falseNegativeAcc.value))
-
   }
 
   /**
     * Cross validation to do hyperparameter tuning for logistic regression
-    * @param dataDF
-    * @param featuresVecName
-    * @param label
-    * @param paramGrid
-    * @param maxIterations
-    * @param learningRate
-    * @param threshold
-    * @return
+    * @param trainingMethod "Gradient" or "Newton"
+    * @param batchSize Int, at least one, the number of batches, default 1, full gradient descent
+    * @param dataDF DataFrame used to optimize hyperparameters and train a "best" model usign the optimal hyperparameters
+    * @param featuresVecName the column (features vector) used to make predictions
+    * @param label the target column name, default "label"
+    * @param k the number of folds used in cross validation, defaul 3-Fold
+    * @param paramGrid the search space of hyperparameters
+    * @param lambdaDoubleParam lambda, used in l2 regularization
+    * @param polyDegreeIntParam polynomial expansion degree
+    * @param scoreType the metric deciding the optimal hyperparameters
+    * @param maxIterations maximum number of iterations
+    * @param learningRate gradient descent (Newton's method) step
+    * @param threshold prediction threshold, default is 0.5
+    * @return Best theta, intercept, training lost using, this best hyperparameters, (parameters, mean cross validation score)
     */
-  def crossValidation(dataDF: DataFrame, featuresVecName: String, label: String = "label", k: Int = 3)
+  def crossValidation(trainingMethod: String = "Gradient", batchSize: Int = 1)
+                     (dataDF: DataFrame, featuresVecName: String, label: String = "label", k: Int = 3)
                      (paramGrid: Array[ParamMap], lambdaDoubleParam: DoubleParam, polyDegreeIntParam: IntParam, scoreType: String)
-                     (maxIterations: Int, learningRate: Double, threshold: Double = 0.5): Array[(ParamMap, Double)] = {
+                     (maxIterations: Int, learningRate: Double, threshold: Double = 0.5): (Vector, Double, Array[Double], ParamMap, Array[(ParamMap, Double)]) = {
+
+    var cvScores: Array[(ParamMap, Double)] = Array()
 
     // search over the hyper-parameter grid spanned by l2 penalty and polynomial expansion
     // outer loop - grid search
-    var polyDegreesSet: Set[Int] = Set[Int]()
-    var lambdasSet: Set[Double] = Set[Double]()
+    if(false) { // naive grid search
+      // if there is no data transformation, use this
+      cvScores = paramGrid.map((paramMap: ParamMap) => {
+        val lambda: Double = paramMap.getOrElse[Double](lambdaDoubleParam, 0.0)
+        val polyDegree: Int = paramMap.getOrElse[Int](polyDegreeIntParam, 1)
 
-    paramGrid.foreach((paramMap: ParamMap) => {
-      val lambda: Double = paramMap.getOrElse[Double](lambdaDoubleParam, 0.0)
-      val polyDegree: Int = paramMap.getOrElse[Int](polyDegreeIntParam, 1)
+        // polynomial expansion
+        val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
+          .setOutputCol("featuresVec").setDegree(polyDegree)
 
-      polyDegreesSet += polyDegree
-      lambdasSet += lambda
-    })
+        val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "featuresVec", label, !trainingMethod.equals("Gradient"))
 
-    val polyDegrees: Array[Int] = polyDegreesSet.toArray
-    val lambdas: Array[Double] = lambdasSet.toArray
-
-    // TODO, avoid unnecessary data pass (transform data only the number of polyDegree times)
-    val cvScores: Array[(Int, Double, Double)] = polyDegrees.map((polyDegree: Int) => {
-      // polynomial expansion
-      val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
-        .setOutputCol("CVFeaturesVec").setDegree(polyDegree)
-
-      val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "CVFeaturesVec", label, false)
-
-      // inner loop - cross validation
-      val kFolds: Array[(RDD[Instance], RDD[Instance])] = kFold(dataRDD, k)
-
-      val cvpolyDegreeScores: Array[Array[(Int, Double, Double)]] = kFolds.map{
-        case (trainData: RDD[Instance], testData: RDD[Instance]) => {
-          trainData.persist()
-          testData.persist()
-
-          // add lambda
-          val polyDegreeLambdasScores: Array[(Int, Double, Double)] = lambdas.map((lambda: Double) => {
-            val (theta: Vector, intercept: Double, lost: Array[Double]) = train("Gradient")(trainData, maxIterations, learningRate, lambda)
+        // inner loop - cross validation
+        val kFolds: Array[(RDD[Instance], RDD[Instance])] = kFold(dataRDD, k)
+        val meanScore: Double = kFolds.map{
+          case (trainData: RDD[Instance], testData: RDD[Instance]) => {
+            // add lambda
+            val (theta: Vector, intercept: Double, lost: Array[Double]) = train(trainingMethod, summary = false)(trainData, maxIterations, learningRate, lambda)
             val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(testData, theta, intercept, threshold)
+            score(confusionMatrix, scoreType)
+          }}.sum / k
 
-            (polyDegree, lambda, score(confusionMatrix, scoreType))
-          })
+        (paramMap, meanScore)
+      })
+    }
+    else {
+      var polyDegreesSet: Set[Int] = Set[Int]()
+      var lambdasSet: Set[Double] = Set[Double]()
 
-          trainData.unpersist()
-          testData.unpersist()
+      paramGrid.foreach((paramMap: ParamMap) => {
+        val lambda: Double = paramMap.getOrElse[Double](lambdaDoubleParam, 0.0)
+        val polyDegree: Int = paramMap.getOrElse[Int](polyDegreeIntParam, 1)
 
-          polyDegreeLambdasScores
+        polyDegreesSet += polyDegree
+        lambdasSet += lambda
+      })
+
+      val polyDegrees: Array[Int] = polyDegreesSet.toArray
+      val lambdas: Array[Double] = lambdasSet.toArray
+
+      // TODO, avoid unnecessary data pass (transform data only the number of polyDegree times)
+      cvScores = polyDegrees.map((polyDegree: Int) => {
+        // polynomial expansion
+        val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
+          .setOutputCol("CVFeaturesVec").setDegree(polyDegree)
+
+        val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "CVFeaturesVec", label, !trainingMethod.equals("Gradient"))
+
+        // inner loop - cross validation
+        val kFolds: Array[(RDD[Instance], RDD[Instance])] = kFold(dataRDD, k)
+
+        val cvPolyDegreeScores: Array[Array[((Int, Double), Double)]] = kFolds.map{
+          case (trainData: RDD[Instance], testData: RDD[Instance]) => {
+            trainData.persist()
+            testData.persist()
+
+            // add lambda
+            val polyDegreeLambdasScores: Array[((Int, Double), Double)] = lambdas.map((lambda: Double) => {
+              val (theta: Vector, intercept: Double, _) = train(trainingMethod)(trainData, maxIterations, learningRate, lambda)
+              val (_, confusionMatrix: ConfusionMatrix) = predict(testData, theta, intercept, threshold)
+
+              ((polyDegree, lambda), score(confusionMatrix, scoreType))
+            })
+
+            trainData.unpersist()
+            testData.unpersist()
+
+            polyDegreeLambdasScores
+          }
         }
-      }
 
-      cvpolyDegreeScores
-    }).fold(Array[Array[(Int, Double, Double)]]())(_ ++ _).fold(Array[(Int, Double, Double)]())(_ ++ _)
+        cvPolyDegreeScores
+      }).fold(Array[Array[((Int, Double), Double)]]())(_ ++ _).fold(Array[((Int, Double), Double)]())(_ ++ _)
+        .groupBy(_._1).mapValues(_.map(_._2).sum / k)
+        .map((cvScore: ((Int, Double), Double))=> {
+          (new ParamMap().put[Int](polyDegreeIntParam, cvScore._1._1).put[Double](lambdaDoubleParam, cvScore._1._2), cvScore._2)
+        }).toArray
+    }
 
-    // TODO, compute mean cv scores
 
-    paramGrid.map((paramMap: ParamMap) => {
-      val lambda: Double = paramMap.getOrElse[Double](lambdaDoubleParam, 0.0)
-      val polyDegree: Int = paramMap.getOrElse[Int](polyDegreeIntParam, 1)
+    val bestParaMap: ParamMap = cvScores.maxBy[Double](_._2)._1
+    val bestLambda: Double = bestParaMap.getOrElse[Double](lambdaDoubleParam, 0.0)
+    val bestPolyDegree: Int = bestParaMap.getOrElse[Int](polyDegreeIntParam, 1)
 
-      // polynomial expansion
-      val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
-        .setOutputCol("featuresVec").setDegree(polyDegree)
+    // polynomial expansion
+    val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
+      .setOutputCol("CVBestFeaturesVec").setDegree(bestPolyDegree)
+    val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "CVBestFeaturesVec", label, false)
 
-      val dataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(dataDF), "featuresVec", label, false)
+    val (theta: Vector, intercept: Double, lost: Array[Double]) = train(trainingMethod)(dataRDD, maxIterations, learningRate, bestLambda)
 
-      // inner loop - cross validation
-      val kFolds: Array[(RDD[Instance], RDD[Instance])] = kFold(dataRDD, k)
-      val meanScore: Double = kFolds.map{
-        case (trainData: RDD[Instance], testData: RDD[Instance]) => {
-          // add lambda
-          val (theta: Vector, intercept: Double, lost: Array[Double]) = train("Gradient")(trainData, maxIterations, learningRate, lambda)
-          val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(testData, theta, intercept, threshold)
-          score(confusionMatrix, scoreType)
-      }}.sum / k
-
-      (paramMap, meanScore)
-    })
+    (theta, intercept, lost, bestParaMap, cvScores)
   }
 
 
@@ -378,6 +425,7 @@ object MyLogisticRegression {
   def main(args: Array[String]): Unit = {
     // whether to display the result of mllib logistic regression
     val displayMLLogReg: Boolean = false
+    val displayMyLogReg: Boolean = true
 
     // Gradient or Newton
     val trainingMethod: String = "Gradient"
@@ -385,7 +433,7 @@ object MyLogisticRegression {
     // Do not use all the cores. TODO, comment setMaster to run in a cluster
     val conf = new SparkConf()
       .setAppName("My Logistic Regression").set("spark.executor.cores", "6")
-      .setMaster("local[2]")
+      //.setMaster("local[2]")
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
@@ -412,7 +460,7 @@ object MyLogisticRegression {
     val fields: Array[StructField] = cols.map(StructField(_, DoubleType, nullable = true))
     val schema = StructType(fields)
     // persist data
-    val dataDF = sparkSql.read.option("header", false).schema(schema).csv(filePath)
+    val dataDF = sparkSql.read.option(key = "header", value = false).schema(schema).csv(filePath)
 
 
     // split data into train and test, TODO, change train / test to speed up
@@ -445,7 +493,9 @@ object MyLogisticRegression {
     if(displayMLLogReg) {
       val trainingStartTime = System.nanoTime()
 
-      val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label").setFeaturesCol(featuresVecName).setMaxIter(100).setFitIntercept(true)
+      val logisticRegression: LogisticRegression = new LogisticRegression().setLabelCol("label")
+        .setFeaturesCol(featuresVecName).setMaxIter(100).setFitIntercept(true)
+
       val mlLogisticRegModel: LogisticRegressionModel = logisticRegression.fit(trTrainDataDF)
 
       val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
@@ -468,54 +518,87 @@ object MyLogisticRegression {
       println("ML accuracy: " + biMetrics.accuracy)
     }
 
-    // My Logistic Regression implementations
+    if(displayMyLogReg) {
+      // My Logistic Regression implementations
+      // if the last parameter is true, add all-one column, used in Newton's method, false, do not add it, used in gradient descent
+      val trainDataRDD: RDD[Instance] = df2RDD(trTrainDataDF, featuresVecName, "label", !trainingMethod.equals("Gradient"))
 
-    // if the last parameter is true, add all-one column, used in Newton's method, false, do not add it, used in gradient descent
-    val trainDataRDD: RDD[Instance] = df2RDD(trTrainDataDF, featuresVecName, "label", !trainingMethod.equals("Gradient"))
+      val trainingStartTime = System.nanoTime()
 
-    val trainingStartTime = System.nanoTime()
+      // gradient descent or Newton's method
+      val (theta, intercept, lost): (Vector, Double, Array[Double]) = train(trainingMethod)(trainDataRDD, 100, 0.0001, 0.1)
 
-    // gradient descent or Newton's method
-    val (theta, intercept, lost): (Vector, Double, Array[Double]) = train(trainingMethod)(trainDataRDD, 100, 0.0001, 0.1)
+      val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
+      println("My Training duration: " + trainingDuration + " s.")
 
-    val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
-    println("Training duration: " + trainingDuration + " s.")
+      println("My theta: " + theta.toArray.mkString(", "))
+      println("My intercept: " + intercept)
+      println("My lost: " + lost.mkString(", "))
 
-    println("theta: " + theta.toArray.mkString(", "))
-    println("intercept: " + intercept)
-    println("lost: " + lost.mkString(", "))
+      /* end train */
 
-    /* end train */
+      /* begin test */
 
-    /* begin test */
+      // Used in gradient descent or Newton's method, the last parameter is false, gradient descent, true, Newton's method
+      val testDataRDD: RDD[Instance] = df2RDD(trTestDataDF, featuresVecName, "label", !trainingMethod.equals("Gradient"))
 
-    // Used in gradient descent or Newton's method, the last parameter is false, gradient descent, true, Newton's method
-    val testDataRDD: RDD[Instance] = df2RDD(trTestDataDF, featuresVecName, "label", !trainingMethod.equals("Gradient"))
+      // lazy prediction, be cautious
+      val (predictions, confusionMatrix) = predict(testDataRDD, theta, intercept)
 
-    // lazy prediction, be cautious
-    val (predictions, confusionMatrix) = predict(testDataRDD, theta, intercept, 0.5)
+      predictions.toDF("label", "features", "predictionProb", "prediction")
+        .select("label", "predictionProb", "prediction").take(20).foreach(println)
 
-    predictions.toDF("label", "features", "predictionProb", "prediction").select("label", "predictionProb", "prediction").take(20).foreach(println)
+      println("accuracy: " + score(confusionMatrix))
 
-    println("accuracy: " + score(confusionMatrix))
+      /* end test */
+    }
 
-    /* end test */
+    /* begin cross validation */
 
-    val lambdaDoubleParam: DoubleParam = new DoubleParam(Identifiable.randomUID("lambdaDoubleParam"), "lambdaDoubleParam", "lambda parameter (>=0.0)", ParamValidators.gtEq(0))
-    val polyDegreeIntParam: IntParam = new IntParam(Identifiable.randomUID("polyDegreeParam"), "polyDegreeParam", "polynomial degree parameter (>=1)", ParamValidators.gtEq(1))
+    val lambdaDoubleParam: DoubleParam =
+      new DoubleParam(Identifiable.randomUID("lambda"), "lambda", "lambda parameter (>=0.0)", ParamValidators.gtEq(0))
+    val polyDegreeIntParam: IntParam =
+      new IntParam(Identifiable.randomUID("polyDegree"), "polyDegree", "polynomial degree parameter (>=1)", ParamValidators.gtEq(1))
 
     val paramGrid: Array[ParamMap] = new ParamGridBuilder()
       .addGrid(lambdaDoubleParam, Array(0.001, 0.01, 0.1, 0.5))
       .addGrid(polyDegreeIntParam, Array(1, 2, 3))
       .build()
 
-    val cvRes = crossValidation(trTrainDataDF, featuresVecName, "label", 3)(paramGrid, lambdaDoubleParam, polyDegreeIntParam, "accuracy")(40, 0.01, 0.5)
+    val trainingStartTime = System.nanoTime()
 
-    cvRes.map(println)
+    val (bestTheta, bestIntercept, _, bestParaMap, _) =
+      crossValidation(trainingMethod)(trTrainDataDF, featuresVecName, "label", 3)(paramGrid, lambdaDoubleParam, polyDegreeIntParam, "accuracy")(40, 0.01)
+
+    val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
+    println("Cross validation training duration: " + trainingDuration + " s.")
+
+    println("bestParaMap: " + bestParaMap)
+
+    /* end cross validation */
 
 
-    /* test */
+    /* begin test */
 
+    // polynomial expansion
+    val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
+      .setOutputCol("CVBestFeaturesVec").setDegree(bestParaMap.getOrElse[Int](polyDegreeIntParam, 1))
+
+    // Used in gradient descent or Newton's method, the last parameter is false, gradient descent, true, Newton's method
+    val testDataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(trTestDataDF),
+      "CVBestFeaturesVec", "label", !trainingMethod.equals("Gradient"))
+
+    // lazy prediction, be cautious
+    val (predictions, confusionMatrix) = predict(testDataRDD, bestTheta, bestIntercept)
+
+    predictions.toDF("label", "features", "predictionProb", "prediction")
+      .select("label", "predictionProb", "prediction").sample(withReplacement = false, 0.0001).map{
+      case Row(label, predictionProb, prediction) => label + " " + predictionProb + " " + prediction
+    }.foreach(println(_))
+
+    println("accuracy: " + score(confusionMatrix))
+
+    /* end test */
 
     sc.stop()
   }
