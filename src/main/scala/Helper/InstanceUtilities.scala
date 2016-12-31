@@ -23,19 +23,23 @@ object InstanceUtilities {
   }
 
 
+  /**
+    *
+    * @param label: true class
+    * @param features: features used to predict
+    */
   case class Instance(label: Double, features: Vector)
 
   /**
     * The case class to hold Instance and its predictionProb to be class 1
     * @param label: true class
-    * @param features: features used to predict
     * @param predictionProb: probability to be class 1
     * @param prediction: predicted label
     */
-  case class InstanceWithPrediction(label: Double, features: Vector, predictionProb: Double, prediction: Double)
+  case class InstanceWithPrediction(label: Double, predictionProb: Double, prediction: Double)
 
   // for regression
-  case class InstanceWithPredictionReg(label: Double, features: Vector, prediction: Double)
+  case class InstanceWithPredictionReg(label: Double, prediction: Double)
 
   case class ConfusionMatrix(truePositive: Long, trueNegative: Long, falsePositive: Long, falseNegative: Long) {
     override def toString: String = {
