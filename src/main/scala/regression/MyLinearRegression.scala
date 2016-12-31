@@ -36,7 +36,7 @@ object MyLinearRegression {
 
   def predict(theta: Vector, instances: RDD[Instance]): RDD[InstanceWithPredictionReg] = {
     instances.map({
-      case Instance(label, features) => InstanceWithPredictionReg(label, features, vecInnerProduct(theta, features))
+      case Instance(label, features) => InstanceWithPredictionReg(label, vecInnerProduct(theta, features))
     })
   }
 
@@ -45,7 +45,7 @@ object MyLinearRegression {
     */
   def rmse(predictions: RDD[InstanceWithPredictionReg]): Double = {
     math.sqrt(predictions.map({
-      case InstanceWithPredictionReg(label, features, prediction) => (label - prediction) * (label - prediction)
+      case InstanceWithPredictionReg(label, prediction) => (label - prediction) * (label - prediction)
     }).sum() / predictions.count())
   }
 
@@ -56,10 +56,8 @@ object MyLinearRegression {
     val sparkSql = initializeSparkSession(conf)
 
     import sparkSql.implicits._
-    import sparkSql._
 
     // read dataset
-
     val filePath = "/Users/Sophie/Downloads/MPML-Datasets/YearPredictionMSD.txt"
 
     // check the content
@@ -116,7 +114,7 @@ object MyLinearRegression {
     // make predictions in test data
     val transformedTestData = pipelineModel.transform(testData)
     val linearRegTestRMSE = rmse(transformedTestData.select(col("label"), col("featuresVec"), col("prediction")).rdd.map({
-      case Row(label: Double, features: Vector, prediction: Double) => InstanceWithPredictionReg(label, features, prediction)
+      case Row(label: Double, features: Vector, prediction: Double) => InstanceWithPredictionReg(label, prediction)
     }))
 
     println("linearRegTestRMSE: " + linearRegTestRMSE)
