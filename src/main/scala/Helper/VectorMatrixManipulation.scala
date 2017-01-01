@@ -75,7 +75,8 @@ object VectorMatrixManipulation {
     * @return
     */
   def vecAdd(v1: Vector, v2: Vector): Vector = {
-    Vectors.dense((0 until v1.size).map(i => v1(i) + v2(i)).toArray)
+
+    Vectors.dense((0 until v1.size).toArray.map(i => v1(i) + v2(i)))
   }
 
   /**
