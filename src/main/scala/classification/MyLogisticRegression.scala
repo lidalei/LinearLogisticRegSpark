@@ -16,7 +16,6 @@ import org.apache.spark.ml.tuning.ParamGridBuilder
 import org.apache.spark.ml.util.Identifiable
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
 import org.apache.spark.storage.StorageLevel
-
 import scala.annotation.tailrec
 
 /**
@@ -60,27 +59,6 @@ object MyLogisticRegression {
     }.treeReduce((pair1: (Vector, Double), pair2: (Vector, Double)) => (vecAdd(pair1._1, pair2._1), pair1._2 + pair2._2))
   }
 
-  /**
-    * @deprecated
-    * Clip the value into (min, max) to avoid numerical instability
-    * @param value The value to be clipped
-    * @param min The lower boundary
-    * @param max The upper boundary
-    * @return Clipped value
-    */
-  private def clip(value: Double, min: Double, max: Double): Double = {
-    if(value > max) {
-      max
-    }
-    else if(value < min) {
-      min
-    }
-    else {
-      value
-    }
-  }
-
-
   /** From package org.apache.spark.mllib.util.MLUtils
     * When `x` is positive and large, computing `math.log(1 + math.exp(x))` will lead to arithmetic
     * overflow. This will happen when `x > 709.78` which is not a very large number.
@@ -110,15 +88,35 @@ object MyLogisticRegression {
       case Instance(label, features) => {
         val z: Double = vecInnerProduct(theta, features) + intercept
 
-        if(label == 1.0) {
-          log1pExp(-z)
-        }
-        else {
-          log1pExp(z)
-        }
+        if(label == 1.0) log1pExp(-z) else log1pExp(z)
       }
     }.mean
   }
+
+
+  /**
+    * Compute the gradient of total cross entropy in terms of parameters, Vector theta.
+    * And total cross entropy over the passed theta and intercept. And number of instances.
+    * @param data Used to compute gradient
+    * @param theta in the point of theta
+    * @param intercept and intercept
+    * @return Pair (gradient of theta, gradient of intercept, total cross entropy, number of instances)
+    */
+  private def computeGradientAndCrossEntropy(data: RDD[Instance], theta: Vector, intercept: Double): (Vector, Double, Double, Long) = {
+    // compute gradient
+    data.map{
+      case Instance(label, features) => {
+        val z: Double = vecInnerProduct(theta, features) + intercept
+
+        val xEntropy = if(label == 1.0) log1pExp(-z) else log1pExp(z)
+
+        val gradientFactor: Double = sigmoid(z) - label
+        // theta and intercept
+        (vecScale(features, gradientFactor), gradientFactor, xEntropy, 1L)
+      }
+    }.treeReduce((pair1, pair2) => (vecAdd(pair1._1, pair2._1), pair1._2 + pair2._2, pair1._3 + pair2._3, pair1._4 + pair2._4))
+  }
+
 
   /**
     * Compute Hessian matrix
@@ -183,8 +181,9 @@ object MyLogisticRegression {
           decayedLearningRate = decayedLearningRate / 2.0
         }
 
-        // gradient of cross entropy at theta and intercept
-        val (gradientOfThetaXE, gradientOfInterceptXE) = computeGradient(trainData, theta, intercept)
+        // gradient of cross entropy at theta and intercept and cross entropy
+        val (gradientOfThetaXE, gradientOfInterceptXE, crossEntropy, num) = computeGradientAndCrossEntropy(trainData, theta, intercept)
+        lost(i) = crossEntropy / num
 
         // Add l2 regularization. Do not regularize intercept
         val gradientOfThetaRegularizer: Vector = vecScale(theta, lambda)
@@ -195,8 +194,6 @@ object MyLogisticRegression {
 
         val deltaIntercept = -decayedLearningRate * gradientOfInterceptXE
         intercept = intercept + deltaIntercept
-
-        lost(i) = crossEntropy(trainData, theta, intercept)
 
         // change of delta or change of cross entropy
         if(i >= 1) {
@@ -214,7 +211,10 @@ object MyLogisticRegression {
         if(i >= 2 && lost(i - 1) > lost(i - 2)) {
           decayedLearningRate = decayedLearningRate / 2.0
         }
-        val (gradientOfTheta, _) = computeGradient(trainData, theta, intercept)
+        // gradient of cross entropy at theta and intercept and cross entropy
+        val (gradientOfTheta, _, crossEntropy, num) = computeGradientAndCrossEntropy(trainData, theta, intercept)
+        lost(i) = crossEntropy / num
+
         // compute Hessian matrix
         val hessianMatrixVec = computeHessianMatrix(trainData, theta)
 
@@ -228,8 +228,6 @@ object MyLogisticRegression {
         val deltaTheta = vecScale(deltaNewton, -decayedLearningRate)
 
         theta = vecAdd(theta, deltaTheta)
-
-        lost(i) = crossEntropy(trainData, theta, intercept)
 
         if(i >= 1) {
           // change of delta or change of cross entropy
