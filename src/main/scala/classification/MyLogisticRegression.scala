@@ -319,10 +319,16 @@ object MyLogisticRegression {
     else {
       // polynomial expansion
       val polyDegree = polyDegrees.head
-      val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
-        .setOutputCol(prefix + polyDegree).setDegree(polyDegree)
+      if(polyDegree == 1) {
+        appendPolyExpand(df, polyDegrees.tail, featuresVecName, prefix)
+      }
+      else {
+        val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
+          .setOutputCol(prefix + polyDegree).setDegree(polyDegree)
 
-      appendPolyExpand(polyNomialExpansion.transform(df), polyDegrees.tail, featuresVecName, prefix)
+        appendPolyExpand(polyNomialExpansion.transform(df), polyDegrees.tail, featuresVecName, prefix)
+      }
+
     }
   }
 
@@ -363,8 +369,6 @@ object MyLogisticRegression {
     })
 
     // excluding polynomial expansion with degree one
-    polyDegreesSet -= 1
-
     val polyDegrees: List[Int] = polyDegreesSet.toList
     val lambdas: List[Double] = lambdasSet.toList
 
@@ -380,14 +384,16 @@ object MyLogisticRegression {
     // outer loop - grid search
     if(false) { // naive grid search
       // if there is no data transformation, use this
-      cvScores = paramGrid.map((paramMap: ParamMap) => {
+      paramGrid.foreach((paramMap: ParamMap) => {
         val lambda: Double = paramMap.getOrElse[Double](lambdaDoubleParam, 0.0)
         val polyDegree: Int = paramMap.getOrElse[Int](polyDegreeIntParam, 1)
 
         val featuresName: String = if(polyDegree != 1) featuresPolyDegreeNamePrefix + polyDegree else featuresVecName
 
-        // inner loop - cross validation
-        val meanScore: Double = kFoldsDF.map{
+        // inner loop - cross validation, using actions instead of map
+        var sumScore: Double = 0.0
+
+        kFoldsDF.foreach{
           case (trainDataDF: DataFrame, testDataDF: DataFrame) => {
             val trainData = df2RDD(trainDataDF, featuresName, label, trainingMethod != "Gradient")
             val testData = df2RDD(testDataDF, featuresName, label, trainingMethod != "Gradient")
@@ -396,10 +402,11 @@ object MyLogisticRegression {
             val (theta: Vector, intercept: Double, lost: Array[Double]) = train(trainingMethod)(trainData, maxIterations, learningRate, lambda)
 
             val (predictions: RDD[InstanceWithPrediction], confusionMatrix: ConfusionMatrix) = predict(testData, theta, intercept, threshold)
-            score(confusionMatrix, scoreType)
-          }}.sum / k
+            sumScore += score(confusionMatrix, scoreType)
+          }
+        }
 
-        (paramMap, meanScore)
+        cvScores ++= Array((paramMap, sumScore / k))
       })
     }
     else {
@@ -467,7 +474,7 @@ object MyLogisticRegression {
     // Do not use all the cores. TODO, comment setMaster to run in a cluster
     val conf = new SparkConf()
       .setAppName("My Logistic Regression").set("spark.executor.cores", "3") // no larger than 5 cores
-      //.setMaster("local[2]")
+      .setMaster("local[2]")
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
@@ -480,8 +487,8 @@ object MyLogisticRegression {
     val displayMLLogReg: Boolean = false
     val displayMyLogReg: Boolean = false
 
-    val displayMLCV: Boolean = true
-    val displayCV: Boolean = false
+    val displayMLCV: Boolean = false
+    val displayCV: Boolean = true
 
     // Gradient or Newton
     val trainingMethod: String = "Gradient"
@@ -652,13 +659,15 @@ object MyLogisticRegression {
 
       val trainingStartTime = System.nanoTime()
 
-      val (bestTheta, bestIntercept, _, bestParaMap, _) =
+      val (bestTheta, bestIntercept, _, bestParaMap, cvScores) =
         crossValidation(trainingMethod)(trTrainDataDF, featuresVecName, "label", 3)(paramGrid, lambdaDoubleParam, polyDegreeIntParam, "accuracy")(40, 0.01)
 
       val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
       println("Cross validation training duration: " + trainingDuration + " s.")
 
       println("bestParaMap: " + bestParaMap)
+
+//      println("cvScores: " + cvScores.mkString(", "))
 
       /* end cross validation */
 
