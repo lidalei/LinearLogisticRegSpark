@@ -43,7 +43,9 @@ object MyCrossValidation {
     require(k >= 2 && k <= 20, "k should be between 2 and 20, both inclusive.")
 
     // first persist data frame into memory (and disk)
-    df.cache()
+    if(df.rdd.getStorageLevel == StorageLevel.NONE) {
+      df.persist(StorageLevel.MEMORY_AND_DISK)
+    }
 
     val kFolds: Array[DataFrame] = df.randomSplit(Array.fill[Double](k)(1.0))
 
