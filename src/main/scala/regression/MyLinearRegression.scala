@@ -44,9 +44,12 @@ object MyLinearRegression {
     * Compute RMSE
     */
   def rmse(predictions: RDD[InstanceWithPredictionReg]): Double = {
-    math.sqrt(predictions.map({
-      case InstanceWithPredictionReg(label, prediction) => (label - prediction) * (label - prediction)
-    }).sum() / predictions.count())
+    math.sqrt(predictions.map{
+      case InstanceWithPredictionReg(label, prediction) => {
+        val diff = label - prediction
+        diff * diff
+      }
+    }.mean)
   }
 
   def main(args: Array[String]): Unit = {
@@ -96,7 +99,7 @@ object MyLinearRegression {
     val timbreAvgVecSlicer = new VectorSlicer().setInputCol("featuresVec").setOutputCol("timbreAvgVec").setIndices((0 to 11).toArray)
     val timbreCovVecSlicer = new VectorSlicer().setInputCol("featuresVec").setOutputCol("timbreCovVec").setIndices((12 to 89).toArray)
 
-    val linearReg = new LinearRegression().setFeaturesCol("featuresVec").setLabelCol("label").setSolver("normal").setRegParam(l2Regularization)
+    val linearReg = new LinearRegression().setFeaturesCol("featuresVec").setLabelCol("label").setSolver("normal").setRegParam(l2Regularization).setFitIntercept(false)
 
     val transformStages = Array(splitter, arr2Vec, stdScaler, yearVecSlicer, yearVec2Double,  featuresVecSlicer, timbreAvgVecSlicer, timbreCovVecSlicer, linearReg)
     val transformPipeline = new Pipeline().setStages(transformStages)
@@ -113,12 +116,12 @@ object MyLinearRegression {
 
     // make predictions in test data
     val transformedTestData = pipelineModel.transform(testData)
-    val linearRegTestRMSE = rmse(transformedTestData.select(col("label"), col("featuresVec"), col("prediction")).rdd.map({
-      case Row(label: Double, features: Vector, prediction: Double) => InstanceWithPredictionReg(label, prediction)
+    val linearRegTestRMSE = rmse(transformedTestData.select(col("label"), col("prediction")).rdd.map({
+      case Row(label: Double, prediction: Double) => InstanceWithPredictionReg(label, prediction)
     }))
 
-    println("linearRegTestRMSE: " + linearRegTestRMSE)
-    transformedTestData.select("label", "prediction").show()
+//    println("linearRegTestRMSE: " + linearRegTestRMSE)
+//    transformedTestData.select("label", "prediction").show()
 
     // implement my linear regression
     val transformedTrainData = pipelineModel.transform(trainData)
@@ -140,8 +143,8 @@ object MyLinearRegression {
     val myRMSE = rmse(predictions)
     println("myRMSE: " + myRMSE)
 
-    val predictionsDF = predictions.toDF("label", "features", "prediction")
-    predictionsDF.select("label", "prediction").show()
+//    val predictionsDF = predictions.toDF("label", "prediction")
+//    predictionsDF.show()
 
 
   }
