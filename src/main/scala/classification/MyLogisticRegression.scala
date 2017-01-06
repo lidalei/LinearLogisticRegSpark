@@ -10,7 +10,7 @@ import Helper.VectorMatrixManipulation._
 import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressionModel}
 import org.apache.spark.util.LongAccumulator
 import Helper.InstanceUtilities._
-import hyperparameter.tuning.MyCrossValidation.{kFoldDF, kFoldRDD}
+import hyperparameter.tuning.MyCrossValidation.kFoldDF
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
 import org.apache.spark.ml.param.{DoubleParam, IntParam, ParamMap, ParamValidators}
@@ -173,7 +173,6 @@ object MyLogisticRegression {
 
     var (i, deltaLost): (Int, Double) = (0, 100.0)
 
-    // TODO implement mini-batch or combine computeGradient and crossEntropy together
     if(trainingMethod == "Gradient") {
 //      if(batchSize > 1) {
 //        // divide data into batchSize parts
@@ -211,9 +210,6 @@ object MyLogisticRegression {
       intercept = 0.0
 
       while(i < maxIterations && deltaLost > tolerance) {
-        if(i >= 2 && lost(i - 1) > lost(i - 2)) {
-          decayedLearningRate = decayedLearningRate / 2.0
-        }
         // gradient of cross entropy at theta and intercept and cross entropy
         val (gradientOfTheta, _, crossEntropy, num) = computeGradientAndCrossEntropy(trainData, theta, intercept)
         lost(i) = crossEntropy / num
@@ -228,13 +224,13 @@ object MyLogisticRegression {
 
         val deltaNewton = Matrices.dense(numberOfFeatures, numberOfFeatures, invHessianMatrixArr).multiply(gradientOfTheta)
 
-        val deltaTheta = vecScale(deltaNewton, -decayedLearningRate)
+        val deltaTheta = vecScale(deltaNewton, -1.0)
 
         theta = vecAdd(theta, deltaTheta)
 
         if(i >= 1) {
           // change of delta or change of cross entropy
-          deltaLost = lost(i) - lost(i - 1)
+          deltaLost = math.abs(lost(i) - lost(i - 1))
         }
 
         i += 1
@@ -425,8 +421,8 @@ object MyLogisticRegression {
         }
         {
           val (trainDataDF, testDataDF) = fold
-          val trainData: RDD[Instance] = df2RDD(trainDataDF, featuresName, label, trainingMethod != "Gradient")
-          val testData: RDD[Instance] = df2RDD(testDataDF, featuresName, label, trainingMethod != "Gradient")
+          val trainData: RDD[Instance] = df2RDD(trainDataDF, featuresName, label, trainingMethod != "Gradient").repartition(80)
+          val testData: RDD[Instance] = df2RDD(testDataDF, featuresName, label, trainingMethod != "Gradient").repartition(80)
 
           trainData.persist()
           testData.persist()
@@ -473,8 +469,8 @@ object MyLogisticRegression {
   def main(args: Array[String]): Unit = {
     // Do not use all the cores. TODO, comment setMaster to run in a cluster
     val conf = new SparkConf()
-      .setAppName("My Logistic Regression").set("spark.executor.cores", "3") // no larger than 5 cores
-      .setMaster("local[2]")
+      .setAppName("My Logistic Regression").set("spark.executor.cores", "5") // no larger than 5 cores
+      //.setMaster("local[2]")
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
@@ -493,7 +489,7 @@ object MyLogisticRegression {
     // Gradient or Newton
     val trainingMethod: String = "Gradient"
 
-    // low, high or all. The features used to make predictions, TODO, only use high level features now.
+    // low, high or all. The features used to make predictions. Only use high level features now.
     val independentFeatures: String = "high"
 
     // check the contents of dataset
@@ -531,7 +527,7 @@ object MyLogisticRegression {
 
     val featuresVecAssembler = new VectorAssembler().setInputCols(featuresCols).setOutputCol(featuresVecName)
 
-    // split data into train and test, TODO, change train / test
+    // split data into train and test
     val trainTestSplitArr: Array[DataFrame] = dataDF.randomSplit(Array(0.7, 0.3))
     val (trainDataDF, testDataDF) = (trainTestSplitArr(0), trainTestSplitArr(1))
 
@@ -583,7 +579,7 @@ object MyLogisticRegression {
       val trainDataRDD: RDD[Instance] = df2RDD(trTrainDataDF, featuresVecName, "label", trainingMethod != "Gradient")
 
       // gradient descent or Newton's method
-      val (theta, intercept, lost): (Vector, Double, Array[Double]) = train(trainingMethod)(trainDataRDD, 100, 0.001, 0.1)
+      val (theta, intercept, lost): (Vector, Double, Array[Double]) = train(trainingMethod)(trainDataRDD, 400, 0.0001, 0.1)
 
       val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
       println("My Training duration: " + trainingDuration + " s.")
@@ -606,6 +602,8 @@ object MyLogisticRegression {
       println("My Test duration: " + testDuration + " s.")
 
 //      predictions.toDF("label", "predictionProb", "prediction").take(20).foreach(println)
+
+      println(confusionMatrix)
 
       println("accuracy: " + score(confusionMatrix))
 
@@ -653,30 +651,38 @@ object MyLogisticRegression {
         new IntParam(Identifiable.randomUID("polyDegree"), "polyDegree", "polynomial degree parameter (>=1)", ParamValidators.gtEq(1))
 
       val paramGrid: Array[ParamMap] = new ParamGridBuilder()
-        .addGrid(lambdaDoubleParam, Array(0.01, 0.1))
-        .addGrid(polyDegreeIntParam, Array(1, 3))
+        .addGrid(lambdaDoubleParam, Array(0.001, 0.01, 0.1, 0.5))
+        .addGrid(polyDegreeIntParam, Array(1, 2, 3))
         .build()
 
       val trainingStartTime = System.nanoTime()
 
       val (bestTheta, bestIntercept, _, bestParaMap, cvScores) =
-        crossValidation(trainingMethod)(trTrainDataDF, featuresVecName, "label", 3)(paramGrid, lambdaDoubleParam, polyDegreeIntParam, "accuracy")(40, 0.01)
+        crossValidation(trainingMethod)(trTrainDataDF, featuresVecName, "label", 3)(paramGrid, lambdaDoubleParam, polyDegreeIntParam, "accuracy")(100, 0.01)
 
       val trainingDuration = (System.nanoTime() - trainingStartTime) / 1e9d
       println("Cross validation training duration: " + trainingDuration + " s.")
 
-      println("bestParaMap: " + bestParaMap)
+      println("cvScores: " + cvScores.mkString(", "))
 
-//      println("cvScores: " + cvScores.mkString(", "))
+      println("bestParaMap: " + bestParaMap)
 
       /* end cross validation */
 
 
       /* begin test */
 
+      // test final accuracy
+//      val bestParaMap = ParamMap().put[Int](polyDegreeIntParam, 3).put[Double](lambdaDoubleParam, 0.1)
+
       // polynomial expansion
       val polyNomialExpansion: PolynomialExpansion = new PolynomialExpansion().setInputCol(featuresVecName)
         .setOutputCol("CVBestFeaturesVec").setDegree(bestParaMap.getOrElse[Int](polyDegreeIntParam, 1))
+
+      // test final accuracy
+//      val trainDataRDD = df2RDD(polyNomialExpansion.transform(trTrainDataDF),
+//        "CVBestFeaturesVec", "label", trainingMethod != "Gradient")
+//      val (bestTheta, bestIntercept, _) = train("Gradient")(trainDataRDD, 400, 0.0001, bestParaMap.getOrElse[Double](lambdaDoubleParam, 0.01))
 
       // Used in gradient descent or Newton's method, the last parameter is false, gradient descent, true, Newton's method
       val testDataRDD: RDD[Instance] = df2RDD(polyNomialExpansion.transform(trTestDataDF),

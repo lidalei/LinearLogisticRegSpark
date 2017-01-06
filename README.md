@@ -8,5 +8,3 @@ In this Project, Linear Regression and Logistic Regression are implemented based
 * Logistic Regression uses Gradient Descent or Netwon's method and Confusion Matrix as a metric.
 
 * Implemented Naive and Efficient Cross Validation in Spark.
-
-* TODO, implement bootstrap aggregation.
