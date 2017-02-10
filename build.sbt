@@ -5,7 +5,7 @@ version := "1.0"
 scalaVersion := "2.11.8"
 
 // add spark dependencies
-val sparkVersion = "2.0.1"
+val sparkVersion = "2.0.2"
 libraryDependencies ++= Seq(
   //  groupID % artifactID % revision,
   //  %% will add scala version to artifactID
