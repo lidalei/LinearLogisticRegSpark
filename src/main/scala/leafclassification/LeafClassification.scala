@@ -66,13 +66,7 @@ object LeafClassification {
     testDF.show()
 //    testDF.printSchema()
 
-    val species = sc.textFile(sampleSubmissionFilePath).first().split(",").tail
-    val species2LabelMap = new mutable.HashMap[String, Double]()
-    species.zipWithIndex.map(e => species2LabelMap.put(e._1, e._2.toDouble))
-
     // transform species to label
-    val speciesStr2Double = new String2DoubleUDF(species2LabelMap.getOrElse(_, 0.0))
-      .setInputCol(speciesField.name).setOutputCol("label")
     val speciesStrIndexer = new StringIndexer().setInputCol(speciesField.name).setOutputCol("label")
 
     // assemble all margin, shape and texture features
@@ -93,7 +87,7 @@ object LeafClassification {
     val cv = new CrossValidator().setEstimator(logReg).setEvaluator(evaluator).setEstimatorParamMaps(paramGrid).setNumFolds(3)
 
     // build pipeline
-    val stages = Array[PipelineStage](speciesStr2Double, featuresVecAssembler, cv)
+    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, cv)
 
     val pipeline = new Pipeline().setStages(stages)
 
@@ -118,12 +112,18 @@ object LeafClassification {
 
     predictions.show()
 
+    // used indexer
     println("Species string 2 index " + Attribute.fromStructField(predictions.schema(bestModel.getPredictionCol)).toString)
+
+    // submission indexer
+    val species = sc.textFile(sampleSubmissionFilePath).first().split(",").tail
+    val species2LabelMap = new mutable.HashMap[String, Double]()
+    species.zipWithIndex.map(e => species2LabelMap.put(e._1, e._2.toDouble))
+
+    println("species2LabelMap: " + species2LabelMap)
 
 //    predictions.write.csv(DATA_FOLDER + "predictions")
 
   }
-
-
 
 }
