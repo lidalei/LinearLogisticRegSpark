@@ -1,16 +1,19 @@
 package leafclassification
 
 import Helper.InstanceUtilities.{initializeSC, initializeSparkSession}
+import Helper.UDFStringIndexer
 import org.apache.spark.SparkConf
 //import org.apache.spark.ml.attribute.Attribute
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressionModel}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
-import org.apache.spark.ml.feature.{StringIndexer, StringIndexerModel, VectorAssembler}
+import org.apache.spark.ml.feature.{StringIndexerModel, VectorAssembler}
 import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.functions.{udf, col}
+import org.apache.spark.ml.linalg.Vector
 
-import scala.collection.mutable
+import scala.collection.mutable.HashMap
 
 /**
   * Created by Sophie on 2/10/17.
@@ -28,7 +31,7 @@ object LeafClassification {
 
     sc.setLogLevel("WARN")
 
-//    import sparkSql.implicits._
+    import sparkSql.implicits._
 
     // read training and test data
     val trainFilePath = DATA_FOLDER + "train.csv"
@@ -65,8 +68,12 @@ object LeafClassification {
 //    testDF.show()
 //    testDF.printSchema()
 
+
+    // submission indexer
+    val species = sc.textFile(sampleSubmissionFilePath).first().split(",").tail
+
     // transform species to label
-    val speciesStrIndexer = new StringIndexer().setInputCol(speciesField.name).setOutputCol("label")
+    val speciesStrIndexer = new UDFStringIndexer(species).setInputCol(speciesField.name).setOutputCol("label")
 
     // assemble all margin, shape and texture features
     val featuresVecAssembler = new VectorAssembler()
@@ -109,25 +116,29 @@ object LeafClassification {
     // make predictions. StringIndexer would skip the species column, see source code.
     val predictions = pipelineModel.transform(testDF)//.select(idField.name, bestModel.getPredictionCol, bestModel.getProbabilityCol)
 
-    predictions.show()
+    predictions.select(idField.name, bestModel.getProbabilityCol).show()
+
+
+    // write to csv file, TODO
+    val vector2Array = udf((v: Vector) => v.toArray)
+    // http://stackoverflow.com/questions/38110038/spark-scala-how-to-convert-dataframevector-to-dataframef1double-fn-d
+    val exprs = species.zipWithIndex.map{case (specie, i) => col("_tmp").getItem(i).alias(specie)}
+
+    predictions.select(idField.name, bestModel.getProbabilityCol)
+      .select(vector2Array(col(bestModel.getProbabilityCol).alias("_tmp"))).select(exprs: _*)
+      .write.option(key = "header", value = true).csv(DATA_FOLDER + "submission")
 
     // used indexer
     val speciesStrIndexerModel = pipelineModel.stages(0).asInstanceOf[StringIndexerModel]
-    val species2LabelMap = new mutable.HashMap[String, Int]()
+    val species2LabelMap = new HashMap[String, Int]()
     speciesStrIndexerModel.labels.zipWithIndex.map(e => species2LabelMap.put(e._1, e._2.toInt))
     println("Species string 2 index map: " + species2LabelMap)
 
 //    println("Species string 2 index " + Attribute.fromStructField(predictions.schema(bestModel.getPredictionCol)).toString)
 
-    // submission indexer
-    val species = sc.textFile(sampleSubmissionFilePath).first().split(",").tail
-    val targetSpecies2LabelMap = new mutable.HashMap[String, Int]()
+    val targetSpecies2LabelMap = new HashMap[String, Int]()
     species.zipWithIndex.map(e => targetSpecies2LabelMap.put(e._1, e._2))
     println("Target species 2 label map: " + targetSpecies2LabelMap)
-
-    species.map(species2LabelMap.getOrElse(_, 0))
-
-//    predictions.write.csv(DATA_FOLDER + "predictions")
 
   }
 
