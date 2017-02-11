@@ -8,7 +8,7 @@ import org.apache.spark.ml.{Pipeline, PipelineModel, PipelineStage}
 import org.apache.spark.ml.feature.{OneHotEncoder, StandardScaler, StringIndexer, VectorAssembler}
 import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
-import org.apache.spark.sql.Row
+import org.apache.spark.sql._
 import org.apache.spark.sql.types._
 
 /**
@@ -27,6 +27,8 @@ object ClickPrediction {
 
     val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
+
+    sc.setLogLevel("WARN")
 
     val dataFields1 = Array[StructField](
       StructField("channel", StringType, nullable = true),
@@ -130,28 +132,51 @@ object ClickPrediction {
 
     val pipeline = new Pipeline().setStages(stages)
 
-    val pipelineModel: PipelineModel = pipeline.fit(trainDataDF)
-    val trTrainDataDF = pipelineModel.transform(trainDataDF)
 
-    trTrainDataDF.show()
-    trTrainDataDF.printSchema()
+    // hold-out
+    val trainTestSplitArr: Array[DataFrame] = trainDataDF.randomSplit(Array(0.7, 0.3))
+    val (trainDataFold, validationDataFold) = (trainTestSplitArr(0), trainTestSplitArr(1))
+
+    val pipelineModel: PipelineModel = pipeline.fit(trainDataFold)
+    val trValidationDataDF = pipelineModel.transform(validationDataFold)
+
+    trValidationDataDF.show()
+    trValidationDataDF.printSchema()
 
     val logisticRegModel: LogisticRegressionModel = pipelineModel.stages(stages.length - 1).asInstanceOf[LogisticRegressionModel]
 
     val theta: Vector = logisticRegModel.coefficients
     val intercept: Double = logisticRegModel.intercept
-    println("ML Theta: " + theta.toArray.mkString(", "))
-    println("ML Intercept: " + intercept)
-    println("ML Objective history: " + logisticRegModel.summary.objectiveHistory.mkString(", "))
+    println("Theta: " + theta.toArray.mkString(", "))
+    println("Intercept: " + intercept)
+    println("Train objective history: " + logisticRegModel.summary.objectiveHistory.mkString(", "))
 
 
-    trTrainDataDF.select(logisticRegModel.getProbabilityCol, logisticRegModel.getPredictionCol).take(20).foreach(println)
+    trValidationDataDF.select(logisticRegModel.getLabelCol, logisticRegModel.getProbabilityCol, logisticRegModel.getPredictionCol).take(20).foreach(println)
 
-    val biMetrics = new MulticlassMetrics(trTrainDataDF.select(logisticRegModel.getPredictionCol, "clicked").rdd.map{
+    val biMetricsTrain = new MulticlassMetrics(trValidationDataDF.select(logisticRegModel.getPredictionCol, "clicked").rdd.map{
       case Row(prediction: Double, label: Double) => (prediction, label)
     })
 
-    println("ML accuracy: " + biMetrics.accuracy)
+    println("Train accuracy: " + biMetricsTrain.accuracy)
+
+
+    // test
+    val trTestDataDF = pipelineModel.transform(testDataDF)
+
+    trTestDataDF.show()
+    trTestDataDF.printSchema()
+
+    trTestDataDF.select(logisticRegModel.getProbabilityCol, logisticRegModel.getPredictionCol).take(20).foreach(println)
+
+    trTestDataDF.select(logisticRegModel.getPredictionCol).write.option(key = "header", value = true).csv("clicked_predictions")
+
+//    val biMetricsTest = new MulticlassMetrics(trTestDataDF.select(logisticRegModel.getPredictionCol, "clicked").rdd.map{
+//      case Row(prediction: Double, label: Double) => (prediction, label)
+//    })
+//
+//    println("Test accuracy: " + biMetricsTest.accuracy)
+
 
   }
 
