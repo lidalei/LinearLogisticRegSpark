@@ -1,9 +1,8 @@
 package leafclassification
 
 import Helper.InstanceUtilities.{initializeSC, initializeSparkSession}
-import Helper.String2DoubleUDF
 import org.apache.spark.SparkConf
-import org.apache.spark.ml.attribute.Attribute
+//import org.apache.spark.ml.attribute.Attribute
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressionModel}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
@@ -58,12 +57,12 @@ object LeafClassification {
     val trainDF = sparkSql.read.option(key = "header", value = true).schema(trainDataSchema).csv(trainFilePath)
     val testDF = sparkSql.read.option(key = "header", value = true).schema(testDataSchema).csv(testFilePath)
 
-    println("Training data:")
-    trainDF.show()
+//    println("Training data:")
+//    trainDF.show()
 //    trainDF.printSchema()
 
-    println("Test data:")
-    testDF.show()
+//    println("Test data:")
+//    testDF.show()
 //    testDF.printSchema()
 
     // transform species to label
@@ -113,14 +112,20 @@ object LeafClassification {
     predictions.show()
 
     // used indexer
-    println("Species string 2 index " + Attribute.fromStructField(predictions.schema(bestModel.getPredictionCol)).toString)
+    val speciesStrIndexerModel = pipelineModel.stages(0).asInstanceOf[StringIndexerModel]
+    val species2LabelMap = new mutable.HashMap[String, Int]()
+    speciesStrIndexerModel.labels.zipWithIndex.map(e => species2LabelMap.put(e._1, e._2.toInt))
+    println("Species string 2 index map: " + species2LabelMap)
+
+//    println("Species string 2 index " + Attribute.fromStructField(predictions.schema(bestModel.getPredictionCol)).toString)
 
     // submission indexer
     val species = sc.textFile(sampleSubmissionFilePath).first().split(",").tail
-    val species2LabelMap = new mutable.HashMap[String, Double]()
-    species.zipWithIndex.map(e => species2LabelMap.put(e._1, e._2.toDouble))
+    val targetSpecies2LabelMap = new mutable.HashMap[String, Int]()
+    species.zipWithIndex.map(e => targetSpecies2LabelMap.put(e._1, e._2))
+    println("Target species 2 label map: " + targetSpecies2LabelMap)
 
-    println("species2LabelMap: " + species2LabelMap)
+    species.map(species2LabelMap.getOrElse(_, 0))
 
 //    predictions.write.csv(DATA_FOLDER + "predictions")
 
