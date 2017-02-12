@@ -3,6 +3,7 @@ package leafclassification
 import Helper.InstanceUtilities.{initializeSC, initializeSparkSession}
 import Helper.UDFStringIndexer
 import org.apache.spark.SparkConf
+import org.apache.spark.ml.PipelineModel
 import org.apache.spark.ml.feature.PolynomialExpansion
 //import org.apache.spark.ml.attribute.Attribute
 import org.apache.spark.ml.{Pipeline, PipelineStage}
@@ -11,8 +12,6 @@ import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{StringIndexerModel, VectorAssembler}
 import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.functions.{udf, col}
-import org.apache.spark.ml.linalg.Vector
 
 import scala.collection.mutable.HashMap
 
@@ -74,7 +73,7 @@ object LeafClassification {
     val species = sc.textFile(sampleSubmissionFilePath).first().split(",").tail
 
     // transform species to label
-    val speciesStrIndexer = new UDFStringIndexer(species).setInputCol(speciesField.name).setOutputCol("label")
+    val speciesStrIndexer = new UDFStringIndexer().setInputCol(speciesField.name).setOutputCol("label").setLabels(species)
 
     // assemble all margin, shape and texture features
     val featuresVecAssembler = new VectorAssembler()
@@ -87,45 +86,42 @@ object LeafClassification {
     val logReg = new LogisticRegression().setFeaturesCol("features").setLabelCol("label")
       .setFitIntercept(true).setMaxIter(100)
 
+    // build pipeline
+    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, polyExpansion, logReg)
+    val pipeline = new Pipeline().setStages(stages)
+
+    // hyper-parameter tuning through cross validation
     val evaluator = new MulticlassClassificationEvaluator()
       .setLabelCol("label").setPredictionCol(logReg.getPredictionCol).setMetricName("accuracy")
 
     val paramGrid = new ParamGridBuilder().addGrid(logReg.regParam, Array(0.0, 0.001, 0.01))
 //      .addGrid(logReg.elasticNetParam, Array(0.4, 0.5, 0.8))
-        .addGrid(polyExpansion.degree, Array(1))
+        .addGrid(polyExpansion.degree, Array(1, 2, 3))
       .build()
 
-    val cv = new CrossValidator().setEstimator(logReg).setEvaluator(evaluator).setEstimatorParamMaps(paramGrid).setNumFolds(3)
-
-    // build pipeline
-    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, polyExpansion, cv)
-
-    val pipeline = new Pipeline().setStages(stages)
-
-    val pipelineModel = pipeline.fit(trainDF)
-
-    val cvModel = pipelineModel.stages(stages.length - 1).asInstanceOf[CrossValidatorModel]
-
+    val cv = new CrossValidator().setEstimator(pipeline).setEvaluator(evaluator).setEstimatorParamMaps(paramGrid).setNumFolds(3)
+    val cvModel: CrossValidatorModel = cv.fit(trainDF)
     println("Average accuracy: " + cvModel.avgMetrics.mkString(","))
 
-    val bestModel = cvModel.bestModel.asInstanceOf[LogisticRegressionModel]
-//    println("Logistic regression theta: " + bestModel.coefficientMatrix)
-//    println("Logistic regression intercept: " + bestModel.interceptVector)
-    println("Best parameters, reg: " + bestModel.getRegParam +", poly degree: " + pipelineModel.stages(2).asInstanceOf[PolynomialExpansion].degree)
+    val pipelineModel= cvModel.bestModel.asInstanceOf[PipelineModel]
+    val logRegModel = pipelineModel.stages(stages.length - 1).asInstanceOf[LogisticRegressionModel]
 
-    if(bestModel.hasSummary) {
-      println("Logistic regression object history: " + bestModel.summary.objectiveHistory)
+//    println("Logistic regression theta: " + logRegModel.coefficientMatrix)
+//    println("Logistic regression intercept: " + logRegModel.interceptVector)
+    println("Best parameters, reg: " + logRegModel.getRegParam +", poly degree: "
+      + pipelineModel.stages(2).asInstanceOf[PolynomialExpansion].getDegree)
+
+    if(logRegModel.hasSummary) {
+      println("Logistic regression object history: " + logRegModel.summary.objectiveHistory)
     }
 
     // make predictions. StringIndexer would skip the species column, see source code.
-    val predictions = pipelineModel.transform(testDF)//.select(idField.name, bestModel.getPredictionCol, bestModel.getProbabilityCol)
-
-    predictions.select(idField.name, bestModel.getProbabilityCol).show()
+    val predictions = pipelineModel.transform(testDF).select(idField.name, logRegModel.getProbabilityCol)
+    predictions.show()
 
 
     // write to json file to be processed in Python
-    predictions.select(idField.name, bestModel.getProbabilityCol)
-      .write.json(DATA_FOLDER + "submission")
+    predictions.write.json(DATA_FOLDER + "submission")
 
     // used indexer
     val speciesStrIndexerModel = pipelineModel.stages(0).asInstanceOf[StringIndexerModel]
