@@ -3,6 +3,7 @@ package leafclassification
 import Helper.InstanceUtilities.{initializeSC, initializeSparkSession}
 import Helper.UDFStringIndexer
 import org.apache.spark.SparkConf
+import org.apache.spark.ml.feature.PolynomialExpansion
 //import org.apache.spark.ml.attribute.Attribute
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressionModel}
@@ -79,6 +80,9 @@ object LeafClassification {
     val featuresVecAssembler = new VectorAssembler()
       .setInputCols(marginsNames ++ shapesNames ++ texturesNames).setOutputCol("features")
 
+    // polynomial expansion
+    val polyExpansion = new PolynomialExpansion().setInputCol("features").setOutputCol("polyFeatures")
+
     // logistic regression model
     val logReg = new LogisticRegression().setFeaturesCol("features").setLabelCol("label")
       .setFitIntercept(true).setMaxIter(100)
@@ -86,14 +90,15 @@ object LeafClassification {
     val evaluator = new MulticlassClassificationEvaluator()
       .setLabelCol("label").setPredictionCol(logReg.getPredictionCol).setMetricName("accuracy")
 
-    val paramGrid = new ParamGridBuilder().addGrid(logReg.regParam, Array(0.001, 0.01))
+    val paramGrid = new ParamGridBuilder().addGrid(logReg.regParam, Array(0.0, 0.001, 0.01))
 //      .addGrid(logReg.elasticNetParam, Array(0.4, 0.5, 0.8))
+        .addGrid(polyExpansion.degree, Array(1))
       .build()
 
     val cv = new CrossValidator().setEstimator(logReg).setEvaluator(evaluator).setEstimatorParamMaps(paramGrid).setNumFolds(3)
 
     // build pipeline
-    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, cv)
+    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, polyExpansion, cv)
 
     val pipeline = new Pipeline().setStages(stages)
 
@@ -104,10 +109,9 @@ object LeafClassification {
     println("Average accuracy: " + cvModel.avgMetrics.mkString(","))
 
     val bestModel = cvModel.bestModel.asInstanceOf[LogisticRegressionModel]
-
-    println("Logistic regression theta: " + bestModel.coefficientMatrix)
-
-    println("Logistic regression intercept: " + bestModel.interceptVector)
+//    println("Logistic regression theta: " + bestModel.coefficientMatrix)
+//    println("Logistic regression intercept: " + bestModel.interceptVector)
+    println("Best parameters, reg: " + bestModel.getRegParam +", poly degree: " + pipelineModel.stages(2).asInstanceOf[PolynomialExpansion].degree)
 
     if(bestModel.hasSummary) {
       println("Logistic regression object history: " + bestModel.summary.objectiveHistory)
@@ -119,14 +123,9 @@ object LeafClassification {
     predictions.select(idField.name, bestModel.getProbabilityCol).show()
 
 
-    // write to csv file, TODO
-    val vector2Array = udf((v: Vector) => v.toArray)
-    // http://stackoverflow.com/questions/38110038/spark-scala-how-to-convert-dataframevector-to-dataframef1double-fn-d
-    val exprs = species.zipWithIndex.map{case (specie, i) => col("_tmp").getItem(i).alias(specie)}
-
+    // write to json file to be processed in Python
     predictions.select(idField.name, bestModel.getProbabilityCol)
-      .select(vector2Array(col(bestModel.getProbabilityCol).alias("_tmp"))).select(exprs: _*)
-      .write.option(key = "header", value = true).csv(DATA_FOLDER + "submission")
+      .write.json(DATA_FOLDER + "submission")
 
     // used indexer
     val speciesStrIndexerModel = pipelineModel.stages(0).asInstanceOf[StringIndexerModel]
