@@ -472,8 +472,8 @@ object MyLogisticRegression {
       .setAppName("My Logistic Regression").set("spark.executor.cores", "5") // no larger than 5 cores
       //.setMaster("local[2]")
 
-    val sc = initializeSC(conf)
     val sparkSql = initializeSparkSession(conf)
+    val sc = sparkSql.sparkContext
 
     sc.setLogLevel("WARN")
 
@@ -703,7 +703,6 @@ object MyLogisticRegression {
     }
 
     sparkSql.stop()
-    sc.stop()
   }
 
 }

@@ -1,6 +1,6 @@
 package leafclassification
 
-import Helper.InstanceUtilities.{initializeSC, initializeSparkSession}
+import Helper.InstanceUtilities.initializeSparkSession
 import Helper.UDFStringIndexer
 import org.apache.spark.SparkConf
 import org.apache.spark.ml.PipelineModel
@@ -26,12 +26,11 @@ object LeafClassification {
 
     val sparkConf: SparkConf = new SparkConf().setAppName("Kaggle Leaf Classification").setMaster("local[*]")
 
-    val sc = initializeSC(sparkConf)
     val sparkSql = initializeSparkSession(sparkConf)
 
-    sc.setLogLevel("WARN")
+    val sc = sparkSql.sparkContext
 
-    import sparkSql.implicits._
+    sc.setLogLevel("WARN")
 
     // read training and test data
     val trainFilePath = DATA_FOLDER + "train.csv"
@@ -96,7 +95,7 @@ object LeafClassification {
 
     val paramGrid = new ParamGridBuilder().addGrid(logReg.regParam, Array(0.0, 0.001, 0.01))
 //      .addGrid(logReg.elasticNetParam, Array(0.4, 0.5, 0.8))
-        .addGrid(polyExpansion.degree, Array(1, 2, 3))
+        .addGrid(polyExpansion.degree, Array(1))
       .build()
 
     val cv = new CrossValidator().setEstimator(pipeline).setEvaluator(evaluator).setEstimatorParamMaps(paramGrid).setNumFolds(3)
@@ -135,6 +134,7 @@ object LeafClassification {
     species.zipWithIndex.map(e => targetSpecies2LabelMap.put(e._1, e._2))
     println("Target species 2 label map: " + targetSpecies2LabelMap)
 
+    sparkSql.stop()
   }
 
 }
