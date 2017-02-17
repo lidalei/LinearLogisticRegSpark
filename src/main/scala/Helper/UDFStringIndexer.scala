@@ -16,7 +16,7 @@ class UDFStringIndexer(uid: String) extends StringIndexer(uid) {
   final val labels: Param[Array[String]] = new Param[Array[String]](this, "labels", "user specified labels")
 
   // Default value is an empty Array. It will invoke builtin fit function.
-  setDefault(labels, Array[String]())
+  setDefault(labels, Array.empty[String])
 
   def setLabels(udfLabels: Array[String]): this.type = set(labels, udfLabels)
 
