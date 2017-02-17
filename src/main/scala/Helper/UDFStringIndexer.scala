@@ -20,6 +20,8 @@ class UDFStringIndexer(uid: String) extends StringIndexer(uid) {
 
   def setLabels(udfLabels: Array[String]): this.type = set(labels, udfLabels)
 
+  final def getLabels(): Array[String] = $(labels)
+
   override def fit(dataset: Dataset[_]): StringIndexerModel = {
     if($(labels).isEmpty) {
       super.fit(dataset)
