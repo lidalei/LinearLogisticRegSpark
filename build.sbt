@@ -14,7 +14,8 @@ libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-sql" % sparkVersion,
   "org.apache.spark" %% "spark-mllib" % sparkVersion,
   "org.log4s" %% "log4s" % "1.3.3",
-  "junit" % "junit" % "4.12"
+  "junit" % "junit" % "4.12",
+  "com.github.fommil.netlib" % "all" % "1.1.2" pomOnly()
 )
 
 assemblyJarName in assembly := "mpml.jar"
