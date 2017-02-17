@@ -1,9 +1,10 @@
 package leafclassification
 
 import Helper.InstanceUtilities.initializeSparkSession
-import Helper.UDFStringIndexer
+import Helper.{MultipleClassificationCrossEntropyEvaluator, UDFStringIndexer}
 import org.apache.spark.SparkConf
 import org.apache.spark.ml.PipelineModel
+import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
 import org.apache.spark.ml.feature.PolynomialExpansion
 //import org.apache.spark.ml.attribute.Attribute
 import org.apache.spark.ml.{Pipeline, PipelineStage}
@@ -22,7 +23,7 @@ object LeafClassification {
 
   val DATA_FOLDER = "/Users/Sophie/Downloads/LeafClassificationData/"
 
-  def main(args: Array[String]) = {
+  def main(args: Array[String]): Unit = {
 
     val sparkConf: SparkConf = new SparkConf().setAppName("Kaggle Leaf Classification").setMaster("local[*]")
 
@@ -82,40 +83,52 @@ object LeafClassification {
     val polyExpansion = new PolynomialExpansion().setInputCol("features").setOutputCol("polyFeatures")
 
     // logistic regression model
-    val logReg = new LogisticRegression().setFeaturesCol("features").setLabelCol("label")
-      .setFitIntercept(true).setMaxIter(100)
+//    val logReg = new LogisticRegression().setFeaturesCol("features").setLabelCol("label")
+//      .setFitIntercept(true).setMaxIter(400)
+
+    val rndForest = new RandomForestClassifier().setFeaturesCol("features").setLabelCol("label")
 
     // build pipeline
-    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, polyExpansion, logReg)
+    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, polyExpansion, rndForest)
     val pipeline = new Pipeline().setStages(stages)
 
     // hyper-parameter tuning through cross validation
-    val evaluator = new MulticlassClassificationEvaluator()
-      .setLabelCol("label").setPredictionCol(logReg.getPredictionCol).setMetricName("accuracy")
+//    val evaluator = new MulticlassClassificationEvaluator()
+//      .setLabelCol(logReg.getLabelCol).setPredictionCol(logReg.getPredictionCol).setMetricName("accuracy")
 
-    val paramGrid = new ParamGridBuilder().addGrid(logReg.regParam, Array(0.0, 0.001, 0.01))
+    val evaluator = new MultipleClassificationCrossEntropyEvaluator().setLabelCol(rndForest.getLabelCol)
+      .setProbabilityCol(rndForest.getProbabilityCol)
+
+    val paramGrid = new ParamGridBuilder().addGrid(rndForest.impurity, Array("entropy", "gini"))
+        .addGrid(rndForest.maxDepth, Array(3, 5, 7, 9))
+        .addGrid(rndForest.minInstancesPerNode, Array(1, 3, 9, 15, 30))
+        .addGrid(rndForest.numTrees, Array(5, 10, 15, 20, 30, 50, 80))
+//      .addGrid(logReg.regParam, Array(0.0, 0.001, 0.01))
 //      .addGrid(logReg.elasticNetParam, Array(0.4, 0.5, 0.8))
         .addGrid(polyExpansion.degree, Array(1))
       .build()
 
-    val cv = new CrossValidator().setEstimator(pipeline).setEvaluator(evaluator).setEstimatorParamMaps(paramGrid).setNumFolds(3)
+    val cv = new CrossValidator().setEstimator(pipeline).setEvaluator(evaluator)
+      .setEstimatorParamMaps(paramGrid).setNumFolds(10)
+
     val cvModel: CrossValidatorModel = cv.fit(trainDF)
-    println("Average accuracy: " + cvModel.avgMetrics.mkString(","))
+    println("Average : " + cvModel.avgMetrics.mkString(","))
 
     val pipelineModel= cvModel.bestModel.asInstanceOf[PipelineModel]
-    val logRegModel = pipelineModel.stages(stages.length - 1).asInstanceOf[LogisticRegressionModel]
+    val rndForestModel = pipelineModel.stages(stages.length - 1).asInstanceOf[RandomForestClassificationModel]
 
 //    println("Logistic regression theta: " + logRegModel.coefficientMatrix)
 //    println("Logistic regression intercept: " + logRegModel.interceptVector)
-    println("Best parameters, reg: " + logRegModel.getRegParam +", poly degree: "
-      + pipelineModel.stages(2).asInstanceOf[PolynomialExpansion].getDegree)
+    println("Best parameters, maxDepth: " + rndForestModel.getMaxDepth + ", minInstancesPerNode: " +
+      rndForestModel.getMinInstancesPerNode + ", numTrees: " + rndForestModel.getNumTrees +
+      ", poly degree: " + pipelineModel.stages(2).asInstanceOf[PolynomialExpansion].getDegree)
 
-    if(logRegModel.hasSummary) {
-      println("Logistic regression object history: " + logRegModel.summary.objectiveHistory)
-    }
+//    if(logRegModel.hasSummary) {
+//      println("Logistic regression object history: " + logRegModel.summary.objectiveHistory)
+//    }
 
     // make predictions. StringIndexer would skip the species column, see source code.
-    val predictions = pipelineModel.transform(testDF).select(idField.name, logRegModel.getProbabilityCol)
+    val predictions = pipelineModel.transform(testDF).select(idField.name, rndForestModel.getProbabilityCol)
     predictions.show()
 
 
@@ -124,13 +137,13 @@ object LeafClassification {
 
     // used indexer
     val speciesStrIndexerModel = pipelineModel.stages(0).asInstanceOf[StringIndexerModel]
-    val species2LabelMap = new HashMap[String, Int]()
+    val species2LabelMap = HashMap[String, Int]()
     speciesStrIndexerModel.labels.zipWithIndex.map(e => species2LabelMap.put(e._1, e._2.toInt))
     println("Species string 2 index map: " + species2LabelMap)
 
 //    println("Species string 2 index " + Attribute.fromStructField(predictions.schema(bestModel.getPredictionCol)).toString)
 
-    val targetSpecies2LabelMap = new HashMap[String, Int]()
+    val targetSpecies2LabelMap = HashMap[String, Int]()
     species.zipWithIndex.map(e => targetSpecies2LabelMap.put(e._1, e._2))
     println("Target species 2 label map: " + targetSpecies2LabelMap)
 
