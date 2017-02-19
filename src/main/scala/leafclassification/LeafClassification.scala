@@ -5,11 +5,10 @@ import Helper.{MultipleClassificationCrossEntropyEvaluator, UDFStringIndexer}
 import org.apache.spark.SparkConf
 import org.apache.spark.ml.PipelineModel
 import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
-import org.apache.spark.ml.feature.PolynomialExpansion
+import org.apache.spark.ml.feature.StandardScaler
 //import org.apache.spark.ml.attribute.Attribute
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.classification.{LogisticRegression, LogisticRegressionModel}
-import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{StringIndexerModel, VectorAssembler}
 import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
 import org.apache.spark.sql.types._
@@ -77,10 +76,9 @@ object LeafClassification {
 
     // assemble all margin, shape and texture features
     val featuresVecAssembler = new VectorAssembler()
-      .setInputCols(marginsNames ++ shapesNames ++ texturesNames).setOutputCol("features")
+      .setInputCols(marginsNames ++ shapesNames ++ texturesNames).setOutputCol("rawFeatures")
 
-    // polynomial expansion
-    val polyExpansion = new PolynomialExpansion().setInputCol("features").setOutputCol("polyFeatures")
+    val scaler = new StandardScaler().setInputCol("rawFeatures").setOutputCol("features").setWithMean(true).setWithStd(true)
 
     // logistic regression model
     val logReg = new LogisticRegression().setFeaturesCol("features").setLabelCol("label").setFitIntercept(true).setMaxIter(400)
@@ -88,7 +86,7 @@ object LeafClassification {
 //    val rndForest = new RandomForestClassifier().setFeaturesCol("features").setLabelCol("label").setMaxMemoryInMB(500)
 
     // build pipeline
-    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, polyExpansion, logReg)
+    val stages = Array[PipelineStage](speciesStrIndexer, featuresVecAssembler, scaler, logReg)
     val pipeline = new Pipeline().setStages(stages)
 
     // hyper-parameter tuning through cross validation
@@ -103,16 +101,16 @@ object LeafClassification {
 //        .addGrid(rndForest.maxDepth, Array(3, 5, 9))
 //        .addGrid(rndForest.minInstancesPerNode, Array(1, 3, 9))
 //        .addGrid(rndForest.numTrees, Array(5, 10, 20))
-      .addGrid(logReg.regParam, Array(0.0, 0.000003, 0.001, 0.01))
+      .addGrid(logReg.regParam, Array(0.000003, 0.00003, 0.0003, 0.003, 0.03, 0.3))
 //      .addGrid(logReg.elasticNetParam, Array(0.4, 0.5, 0.8))
-        .addGrid(polyExpansion.degree, Array(1))
       .build()
+
 
     val cv = new CrossValidator().setEstimator(pipeline).setEvaluator(evaluator)
       .setEstimatorParamMaps(paramGrid).setNumFolds(10)
 
     val cvModel: CrossValidatorModel = cv.fit(trainDF)
-    println("Average : " + cvModel.avgMetrics.mkString(","))
+    println("Average cross entropy: " + cvModel.avgMetrics.mkString(","))
 
     val pipelineModel= cvModel.bestModel.asInstanceOf[PipelineModel]
     val logRegModel = pipelineModel.stages(stages.length - 1).asInstanceOf[LogisticRegressionModel]
@@ -124,9 +122,7 @@ object LeafClassification {
     println(
 //      "Best parameters, maxDepth: " + rndForestModel.getMaxDepth + ", minInstancesPerNode: " +
 //      rndForestModel.getMinInstancesPerNode + ", numTrees: " + rndForestModel.getNumTrees +
-      "logReg reg: " + logRegModel.getRegParam +
-      ", poly degree: " + pipelineModel.stages(2).asInstanceOf[PolynomialExpansion].getDegree
-    )
+      "logReg reg: " + logRegModel.getRegParam)
 
 //    if(logRegModel.hasSummary) {
 //      println("Logistic regression object history: " + logRegModel.summary.objectiveHistory)
