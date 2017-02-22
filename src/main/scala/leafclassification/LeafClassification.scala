@@ -5,6 +5,7 @@ import Helper.{MultipleClassificationCrossEntropyEvaluator, UDFStringIndexer}
 import org.apache.spark.SparkConf
 import org.apache.spark.ml.PipelineModel
 import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.StandardScaler
 //import org.apache.spark.ml.attribute.Attribute
 import org.apache.spark.ml.{Pipeline, PipelineStage}
@@ -130,7 +131,7 @@ object LeafClassification {
 
     // make predictions. StringIndexer would skip the species column, see source code.
     val predictions = pipelineModel.transform(testDF).select(idField.name, logRegModel.getProbabilityCol)
-    predictions.show()
+    predictions.take(10).foreach(println)
 
 
     // write to json file to be processed in Python
@@ -142,7 +143,7 @@ object LeafClassification {
     speciesStrIndexerModel.labels.zipWithIndex.map(e => species2LabelMap.put(e._1, e._2.toInt))
     println("Species string 2 index map: " + species2LabelMap)
 
-//    println("Species string 2 index " + Attribute.fromStructField(predictions.schema(bestModel.getPredictionCol)).toString)
+//    println("Species string 2 index " + Attribute.fromStructField(predictions.schema(logRegModel.getPredictionCol)).toString)
 
     val targetSpecies2LabelMap = HashMap[String, Int]()
     species.zipWithIndex.map(e => targetSpecies2LabelMap.put(e._1, e._2))
