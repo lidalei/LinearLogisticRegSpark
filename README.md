@@ -8,3 +8,6 @@ In this Project, Linear Regression and Logistic Regression are implemented based
 * Logistic Regression uses Gradient Descent or Netwon's method and Confusion Matrix as a metric.
 
 * Implemented Naive and Efficient Cross Validation in Spark.
+
+# Presentation
+Check the slideshare link [linear and logistic regression on spark](https://www.slideshare.net/DaleiLEE/linear-and-logistic-regression-on-spark-71183196).
