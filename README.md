@@ -1,7 +1,7 @@
 # Linear Logistic Regression with Spark
 Project of Massively Parallel Machine Learning at UPM 2016 / 2017.
 
-In this Project, Linear Regression and Logistic Regression are implemented based on Spark and Saprk SQL.
+In this Project, Linear Regression and Logistic Regression are implemented based on Spark and Spark SQL.
 
 * Linear Regression uses Normal Equation and RMSE (Root Mean Squared Error) as a metric.
 
